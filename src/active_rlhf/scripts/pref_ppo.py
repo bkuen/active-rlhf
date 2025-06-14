@@ -2,16 +2,19 @@
 import os
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List
 
 from active_rlhf.algorithms.pref_ppo import Agent, AgentTrainer
 import gymnasium as gym
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
 import tyro
 from torch.utils.tensorboard import SummaryWriter
+
+from active_rlhf.data.buffers import ReplayBuffer
+from active_rlhf.data.dataset import PreferenceDataset
+from active_rlhf.rewards.reward_nets import PreferenceModel, RewardEnsemble, RewardTrainer
 
 
 @dataclass
@@ -74,6 +77,32 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
+
+    # Reward training
+    replay_buffer_capacity: int = 1000000
+    """the capacity of the replay buffer"""
+    reward_net_epochs: int = 3
+    """the number of epochs to train the reward network"""
+    reward_net_lr: float = 1e-3
+    """the learning rate of the reward network"""
+    reward_net_weight_decay: float = 0.0
+    """the weight decay of the reward network"""
+    reward_net_batch_size: int = 32
+    """the batch size of the reward network"""
+    reward_net_minibatch_size: int = 32
+    """the mini-batch size of the reward network"""
+    reward_net_ensemble_size: int = 3
+    """the number of ensemble members in the reward network"""
+    reward_net_hidden_dims: List[int] = field(default_factory=lambda: [256, 256, 256])
+    """the hidden dimensions of the reward network"""
+    reward_net_dropout: float = 0.0
+    """the dropout rate of the reward network"""
+    query_schedule: str = "linear"
+    """the schedule for querying the reward network"""
+    total_queries: int = 400
+    """the total number of queries to send to the teacher"""
+    queries_per_session: int = 10
+    """the number of queries to send to the teacher per session"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -140,9 +169,45 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
+    # Reward training setup
+    replay_buffer = ReplayBuffer(
+        capacity=args.replay_buffer_capacity,
+        envs=envs,
+    )
+
+    reward_ensemble = RewardEnsemble(
+        obs_dim=envs.single_observation_space.shape[0],
+        act_dim=envs.single_action_space.shape[0],
+        hidden_dims=args.reward_net_hidden_dims,
+        dropout=args.reward_net_dropout,
+        ensemble_size=args.reward_net_ensemble_size,
+    )
+
+    preference_model = PreferenceModel(reward_ensemble)
+
+    reward_trainer = RewardTrainer(
+        preference_model=preference_model,
+        writer=writer,
+        epochs=args.reward_net_epochs,
+        lr=args.reward_net_lr,
+        weight_decay=args.reward_net_weight_decay,
+        batch_size=args.reward_net_batch_size,
+        minibatch_size=args.reward_net_minibatch_size,
+    )
+
+    if args.query_schedule == "linear":
+        query_schedule = np.linspace(0, 1, (args.total_queries // args.queries_per_session) + 1, endpoint=False)[1:]
+        query_schedule = query_schedule * args.total_timesteps
+    else:
+        raise NotImplementedError(f"Query schedule {args.query_schedule} is not implemented.")
+
+    print(f"Query schedule: {query_schedule}")
+
+    # Agent setup
     agent = Agent(envs).to(device)
     agent_trainer = AgentTrainer(
         agent=agent,
+        reward_ensemble=reward_ensemble,
         envs=envs,
         device=device,
         lr=args.learning_rate,
@@ -163,11 +228,12 @@ if __name__ == "__main__":
         target_kl=args.target_kl,
         seed=args.seed,
     )
-        
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
+
+    next_query_step = 0
 
     for iteration in range(1, args.num_iterations + 1):
         # Annealing the rate if instructed to do so.
@@ -175,10 +241,59 @@ if __name__ == "__main__":
 
         # Collect rollout
         rollout_sample, episode_infos = agent_trainer.collect_rollout(global_step, args.num_steps)
+        replay_buffer.add_rollout(rollout_sample)
+
         global_step += args.num_envs * args.num_steps
 
         # Update policy
         metrics = agent_trainer.update_policy(rollout_sample=rollout_sample, num_steps=args.num_steps)
+
+        # Train reward network if next step is in query schedule. Be careful as we might overstep the query schedule.
+        if False and next_query_step < len(query_schedule) and global_step >= query_schedule[next_query_step]:
+            reward_samples = replay_buffer.sample(args.reward_net_batch_size*2)
+            reward_preds = reward_ensemble.mean_reward(reward_samples.obs, reward_samples.acts)
+
+            first_obs = reward_samples.obs[:args.reward_net_batch_size] # shape: [batch_size, fragment_length, obs_dim]
+            first_acts = reward_samples.acts[:args.reward_net_batch_size] # shape: [batch_size, fragment_length, act_dim]
+            first_dones = reward_samples.dones[:args.reward_net_batch_size] # shape: [batch_size, fragment_length]
+            second_obs = reward_samples.obs[args.reward_net_batch_size:] # shape: [batch_size, fragment_length, obs_dim]
+            second_acts = reward_samples.acts[args.reward_net_batch_size:] # shape: [batch_size, fragment_length, act_dim]
+            second_dones = reward_samples.dones[args.reward_net_batch_size:] # shape: [batch_size, fragment_length]
+
+            first_rews = reward_preds[:args.reward_net_batch_size]  # shape: [batch_size, fragment_length]
+            second_rews = reward_preds[args.reward_net_batch_size:]  # shape: [batch_size, fragment_length]
+            first_returns = first_rews.sum(dim=-1)
+            second_returns = second_rews.sum(dim=-1)
+            
+            # Generate preferences based on returns
+            # If returns are significantly different, prefer the better one
+            return_diff = (first_returns - second_returns).abs()
+            return_sum = (first_returns + second_returns).abs()
+            relative_diff = return_diff / (return_sum + 1e-8)  # Add small epsilon to avoid division by zero
+            
+            # Initialize preferences tensor
+            prefs = torch.zeros((args.reward_net_batch_size, 2), device=device)
+            
+            # Prefer the better trajectory
+            first_better = first_returns.sum(dim=-1) > second_returns.sum(dim=-1)
+            prefs[first_better] = torch.tensor([1.0, 0.0], device=device)
+            prefs[~first_better] = torch.tensor([0.0, 1.0], device=device)
+
+            preference_dataset = PreferenceDataset(
+                first_obs=first_obs,
+                first_acts=first_acts,
+                first_rews=first_rews,
+                first_dones=first_dones,
+                second_obs=second_obs,
+                second_acts=second_acts,
+                second_rews=second_rews,
+                second_dones=second_dones,
+                prefs=prefs,
+            )
+
+            reward_trainer.train(preference_dataset, global_step)
+
+            next_query_step += 1
 
         # Log metrics
         writer.add_scalar("charts/learning_rate", agent_trainer.optimizer.param_groups[0]["lr"], global_step)

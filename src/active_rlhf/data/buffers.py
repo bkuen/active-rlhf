@@ -11,40 +11,6 @@ class ReplayBufferSample:
     rews: th.Tensor
     dones: th.Tensor
 
-class ReplayBuffer:
-    obs: th.Tensor
-    acts: th.Tensor
-    rews: th.Tensor
-    dones: th.Tensor
-
-    def __init__(self, capacity: int = 500000):
-        self.capacity = capacity
-        self.size = 0
-        self.obs = th.zeros((capacity, 1))
-        self.acts = th.zeros((capacity, 1))
-        self.rews = th.zeros((capacity, 1))
-        self.dones = th.zeros((capacity, 1), dtype=th.bool)
-
-    def add(self, obs: th.Tensor, act: th.Tensor, rew: th.Tensor, done: th.Tensor):
-        """Add a new transition to the buffer."""
-        idx = self.size % self.capacity
-        self.obs[idx] = obs
-        self.acts[idx] = act
-        self.rews[idx] = rew
-        self.dones[idx] = done
-        self.size += 1
-
-    def sample(self, batch_size: int) -> ReplayBufferSample:
-        """Sample a batch of transitions from the buffer."""
-        max_size = min(self.size, self.capacity)
-        indices = th.randint(0, max_size, (batch_size,))
-        return ReplayBufferSample(
-            obs=self.obs[indices],
-            acts=self.acts[indices],
-            rews=self.rews[indices],
-            dones=self.dones[indices]
-        )
-    
 @dataclass
 class RolloutBufferSample:
     obs: th.Tensor
@@ -54,12 +20,98 @@ class RolloutBufferSample:
     dones: th.Tensor
     values: th.Tensor
 
+class ReplayBuffer:
+    obs: th.Tensor
+    acts: th.Tensor
+    rews: th.Tensor
+    dones: th.Tensor
+
+    def __init__(self, envs: SyncVectorEnv, capacity: int = 500000, fragment_length: int = 50):
+        self.envs = envs
+        self.capacity = capacity
+        self.fragment_length = fragment_length
+        self.size = 0
+        self.pos = 0
+        self.obs = th.zeros((capacity, envs.single_observation_space.shape[0]))
+        self.acts = th.zeros((capacity, envs.single_action_space.shape[0]))
+        self.rews = th.zeros((capacity, 1))
+        self.dones = th.zeros((capacity, 1), dtype=th.bool)
+
+    def add(self, obs: th.Tensor, act: th.Tensor, rew: th.Tensor, done: th.Tensor):
+        """Add a new transition to the buffer.
+        Args:
+            obs: The observation tensor of shape (num_steps, obs_dim).
+            act: The action tensor of shape (num_steps, act_dim).
+            rew: The reward tensor of shape (num_steps, 1).
+            done: The done tensor of shape (num_steps, 1).
+        """
+        fragment_length = obs.shape[0]
+        start_idx = self.pos
+        end_idx = start_idx + fragment_length
+
+        rew = rew.unsqueeze(-1)  # Ensure rew is of shape (fragment_length,)
+        done = done.unsqueeze(-1)  # Ensure done is of shape (fragment_length,)
+
+        if end_idx < self.capacity:
+            self.obs[start_idx:end_idx] = obs[:]
+            self.acts[start_idx:end_idx] = act[:]
+            self.rews[start_idx:end_idx] = rew[:]
+            self.dones[start_idx:end_idx] = done[:]
+
+            self.size = min(self.size + fragment_length, self.capacity)
+        else:
+            overwrite_length = end_idx - self.capacity
+            self.obs[start_idx:self.capacity] = obs[:(fragment_length - overwrite_length)]
+            self.acts[start_idx:self.capacity] = act[:(fragment_length - overwrite_length)]
+            self.rews[start_idx:self.capacity] = rew[:(fragment_length - overwrite_length)]
+            self.dones[start_idx:self.capacity] = done[:(fragment_length - overwrite_length)]
+
+            self.obs[:overwrite_length] = obs[(fragment_length - overwrite_length):]
+            self.acts[:overwrite_length] = act[(fragment_length - overwrite_length):]
+            self.rews[:overwrite_length] = rew[(fragment_length - overwrite_length):]
+            self.dones[:overwrite_length] = done[(fragment_length - overwrite_length):]
+
+        self.pos = (self.pos + fragment_length) % self.capacity
+
+    def add_rollout(self, rollout: RolloutBufferSample):
+        obs = rollout.obs.reshape((-1,) + self.envs.single_observation_space.shape)
+        acts = rollout.actions.reshape((-1,) + self.envs.single_action_space.shape)
+        rews = rollout.ground_truth_rewards.reshape(-1)
+        dones = rollout.dones.reshape(-1)
+
+        print("Rollout observations shape:", obs.shape)
+        print("Rollout actions shape:", acts.shape)
+        print("Rollout rewards shape:", rews.shape)
+        print("Rollout dones shape:", dones.shape)
+
+        """Add a rollout of transitions to the buffer."""
+        self.add(
+            obs=obs,
+            act=acts,
+            rew=rews,  # Ensure rew is of shape (fragment_length, 1)
+            done=dones,  # Ensure done is of shape (fragment_length, 1)
+        )
+
+
+    def sample(self, batch_size: int) -> ReplayBufferSample:
+        """Sample a batch of transitions from the buffer."""
+        max_size = min(self.size, self.capacity)
+        start_indices = th.randint(0, max_size, (batch_size,))
+        indices = (start_indices[:, None] + th.arange(self.fragment_length)[None, :]) % max_size
+        return ReplayBufferSample(
+            obs=self.obs[indices].view(batch_size, self.fragment_length, -1),
+            acts=self.acts[indices].view(batch_size, self.fragment_length, -1),
+            rews=self.rews[indices].view(batch_size, self.fragment_length, -1),
+            dones=self.dones[indices].view(batch_size, self.fragment_length, -1)
+        )
+
 class RolloutBuffer:
     def __init__(self,
                  num_steps: int,
                  num_envs: int,
                  envs: SyncVectorEnv,
                  device: str = 'cpu'):
+        self.envs = envs
         self.obs = th.zeros((num_steps, num_envs) + envs.single_observation_space.shape).to(device)
         self.actions = th.zeros((num_steps, num_envs) + envs.single_action_space.shape).to(device)
         self.logprobs = th.zeros((num_steps, num_envs)).to(device)
@@ -83,4 +135,15 @@ class RolloutBuffer:
             ground_truth_rewards=self.ground_truth_rewards,
             dones=self.dones,
             values=self.values
+        )
+
+    def get_flattened_batch(self) -> RolloutBufferSample:
+        """Returns a flattened version of the buffer."""
+        return RolloutBufferSample(
+            obs=self.obs.reshape((-1,) + self.envs.single_observation_space.shape),
+            actions=self.actions.reshape((-1,) + self.envs.single_action_space.shape),
+            logprobs=self.logprobs.reshape(-1),
+            ground_truth_rewards=self.ground_truth_rewards.reshape(-1),
+            dones=self.dones.reshape(-1),
+            values=self.values.reshape(-1),
         )

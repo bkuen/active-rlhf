@@ -7,6 +7,8 @@ from torch.distributions.normal import Normal
 import numpy as np
 
 from active_rlhf.data.buffers import RolloutBuffer, RolloutBufferSample
+from active_rlhf.rewards.reward_nets import RewardEnsemble
+
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     th.nn.init.orthogonal_(layer.weight, std)
@@ -62,7 +64,8 @@ class RolloutEpisodeInfo:
 
 class AgentTrainer:
     def __init__(self, 
-                 agent: Agent, 
+                 agent: Agent,
+                 reward_ensemble: RewardEnsemble,
                  envs: SyncVectorEnv, 
                  device: str, 
                  lr: float, 
@@ -83,6 +86,7 @@ class AgentTrainer:
                  target_kl: float,
                  seed: int):
         self.agent = agent
+        self.reward_ensemble = reward_ensemble
         self.envs = envs
         self.device = device
         self.lr = lr
@@ -228,6 +232,10 @@ class AgentTrainer:
 
     def _compute_gaes(self, rollout_sample: RolloutBufferSample, num_steps: int):
         with th.no_grad():
+            obs = rollout_sample.obs.reshape((-1,) + self.envs.single_observation_space.shape)
+            acts = rollout_sample.actions.reshape((-1,) + self.envs.single_action_space.shape)
+            reward_preds = self.reward_ensemble.mean_reward(obs, acts)
+
             next_value = self.agent.get_value(self.next_obs).reshape(1, -1)
             advantages = th.zeros_like(rollout_sample.ground_truth_rewards).to(self.device)
             lastgaelam = 0

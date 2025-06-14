@@ -26,4 +26,15 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --ent-coef=0.0 \
   --vf-coef=0.5 \
   --max-grad-norm=0.5 \
-  --target-kl=None
+  --target-kl=None \
+  --replay-buffer-capacity=1000000 \
+  --reward-net-epochs=3 \
+  --reward-net-lr=1e-3 \
+  --reward-net-weight-decay=0.0 \
+  --reward-net-batch-size=32 \
+  --reward-net-minibatch-size=32 \
+  --reward-net-ensemble-size=3 \
+  --reward-net-dropout=0.0 \
+  --query-schedule="linear" \
+  --total-queries=3000 \
+  --queries-per-session=10
