@@ -323,6 +323,9 @@ if __name__ == "__main__":
                         prefs=prefs[i],
                     )
 
+            assert len(train_preference_buffer) <= args.total_queries
+            assert len(val_preference_buffer) <= args.total_queries
+
             # Train reward network if we have enough samples
             if len(train_preference_buffer) > 0 and len(val_preference_buffer) > 0:
                 try:

@@ -205,41 +205,45 @@ class RewardTrainer:
         if self.batch_size % self.minibatch_size != 0:
             raise ValueError("Batch size must be a multiple of minibatch size.")
 
-    def _calculate_reward_accuracy(self, first_pred_rews: th.Tensor, second_pred_rews: th.Tensor, batch: dataset.PreferenceBatch) -> float:
-        """Calculate accuracy of reward predictions compared to ground truth rewards.
-        
-        Args:
-            first_pred_rews: Predicted rewards for first trajectory of shape (batch_size, fragment_size, 1, ensemble_size)
-            second_pred_rews: Predicted rewards for second trajectory of shape (batch_size, fragment_size, 1, ensemble_size)
-            batch: A PreferenceBatch containing first and second trajectories with their ground truth rewards with shapes:
-                - first_rews: (batch_size, fragment_size, 1)
-                - second_rews: (batch_size, fragment_size, 1)
-            
-        Returns:
-            float: Accuracy of reward predictions (0-1)
+    def _calculate_reward_accuracy(self,
+                                   first_pred_rews: th.Tensor,  # (B ,F ,E)
+                                   second_pred_rews: th.Tensor,  # (B ,F ,E)
+                                   batch: dataset.PreferenceBatch
+                                   ) -> float:
         """
-        # Calculate MSE between predicted and ground truth rewards
-        print("First predicted rewards shape:", first_pred_rews.shape)
-        print("Second predicted rewards shape:", second_pred_rews.shape)
-        print("First ground truth rewards shape:", batch.first_rews.shape)
-        print("Second ground truth rewards shape:", batch.second_rews.shape)
+        Fraction of pairs whose *relative* return predicted by the ensemble
+        matches the relative return of the ground-truth rewards.
+
+        Returns
+        -------
+        float in [0,1] – classification accuracy over the batch.
+        """
 
         with th.no_grad():
-            predictions = th.stack([first_pred_rews, second_pred_rews], dim=0)
-            predictions = predictions.mean(dim=-1)  # Average over ensemble members
-            predictions = predictions.reshape(-1) # Flatten to 1D for comparison
+            # ---------- 1. collapse fragment & ensemble  ----------
+            # Predicted return of each trajectory
+            #   (B ,E) ← sum over fragment
+            ret_pred_first = first_pred_rews.sum(dim=1)  # (B ,E)
+            ret_pred_second = second_pred_rews.sum(dim=1)  # (B ,E)
 
-            print("Predictions shape after stacking and averaging:", predictions.shape)
+            # Majority vote (mean) over ensemble
+            #   (B,)  : positive  → first preferred
+            #           negative  → second preferred
+            ret_gap_pred = (ret_pred_first - ret_pred_second).mean(dim=-1)
+            pref_pred = (ret_gap_pred > 0).long()  # 0 / 1
 
-            ground_truth = th.stack([batch.first_rews, batch.second_rews], dim=0)
-            ground_truth = ground_truth.reshape(-1)  # Flatten to 1D for comparison
+            # ---------- 2. same for ground-truth ----------
+            gt_first = batch.first_rews.sum(dim=1).squeeze(-1)  # (B,)
+            gt_second = batch.second_rews.sum(dim=1).squeeze(-1)  # (B,)
+            pref_gt = (gt_first > gt_second).long()  # 0 / 1
 
-            print("Ground truth shape after stacking:", ground_truth.shape)
+            # Ignore ties in the ground truth (optional – comment out to keep them)
+            valid_mask = (gt_first != gt_second)
+            if valid_mask.sum() == 0:
+                return 0.5  # indeterminate
 
-            mse = nn.MSELoss(reduction='mean')
-            accuracy = 1 / (1 + mse(predictions, ground_truth))
-            accuracy = accuracy.item()
-            assert 0 <= accuracy <= 1, f"Accuracy out of bounds: {accuracy}"
+            correct = (pref_pred == pref_gt)[valid_mask]  # Bool
+            accuracy = correct.float().mean().item()  # scalar ∈ [0,1]
 
         return accuracy
 
@@ -254,20 +258,46 @@ class RewardTrainer:
         total_train_loss = 0.0
         total_val_loss = 0.0
         total_reward_accuracy = 0.0
-
-        # Calculate number of batches per epoch
-        num_train_batches = max(1, len(train_buffer) // self.batch_size)
-        num_val_batches = max(1, len(val_buffer) // self.batch_size)
         
         for epoch in tqdm(range(1, self.epochs+1), desc="Training Reward Model"):
             # Training phase
             self.preference_model.train()
             epoch_train_loss = 0.0
             
-            for _ in range(num_train_batches):
+            try:
+                # Sample a single batch for the entire epoch
+                batch = train_buffer.sample(self.batch_size)
+                
+                # Forward pass
+                first_rews, second_rews, probs = self.preference_model(
+                    first_obs=batch.first_obs,
+                    first_acts=batch.first_acts,
+                    second_obs=batch.second_obs,
+                    second_acts=batch.second_acts,
+                )
+
+                # Compute loss
+                loss = self.preference_model.loss(probs, batch.prefs)
+                epoch_train_loss = loss.item()
+
+                # Backward pass
+                self.optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.preference_model.ensemble.parameters(), max_norm=1.0)
+                self.optimizer.step()
+            except ValueError as e:
+                print(f"Warning: {e}. Skipping this training epoch.")
+                continue
+
+            # Validation phase
+            self.preference_model.eval()
+            epoch_val_loss = 0.0
+            epoch_reward_accuracy = 0.0
+            
+            with th.no_grad():
                 try:
-                    # Sample a new batch for each training step
-                    batch = train_buffer.sample(self.batch_size)
+                    # Sample a single batch for validation
+                    batch = val_buffer.sample(self.batch_size)
                     
                     # Forward pass
                     first_rews, second_rews, probs = self.preference_model(
@@ -277,68 +307,29 @@ class RewardTrainer:
                         second_acts=batch.second_acts,
                     )
 
-                    # Compute loss
-                    loss = self.preference_model.loss(probs, batch.prefs)
-                    epoch_train_loss += loss.item()
+                    # Compute validation loss
+                    val_loss = self.preference_model.loss(probs, batch.prefs)
+                    epoch_val_loss = val_loss.item()
 
-                    # Backward pass
-                    self.optimizer.zero_grad()
-                    loss.backward()
-                    nn.utils.clip_grad_norm_(self.preference_model.ensemble.parameters(), max_norm=1.0)
-                    self.optimizer.step()
+                    # Calculate reward accuracy
+                    reward_accuracy = self._calculate_reward_accuracy(first_rews, second_rews, batch)
+                    epoch_reward_accuracy = reward_accuracy
                 except ValueError as e:
-                    print(f"Warning: {e}. Skipping this training batch.")
+                    print(f"Warning: {e}. Skipping this validation epoch.")
                     continue
 
-            # Validation phase
-            self.preference_model.eval()
-            epoch_val_loss = 0.0
-            epoch_reward_accuracy = 0.0
-            num_val_batches_processed = 0
-            
-            with th.no_grad():
-                for _ in range(num_val_batches):
-                    try:
-                        # Sample a new batch for validation
-                        batch = val_buffer.sample(self.batch_size)
-                        
-                        # Forward pass
-                        first_rews, second_rews, probs = self.preference_model(
-                            first_obs=batch.first_obs,
-                            first_acts=batch.first_acts,
-                            second_obs=batch.second_obs,
-                            second_acts=batch.second_acts,
-                        )
-
-                        # Compute validation loss
-                        val_loss = self.preference_model.loss(probs, batch.prefs)
-                        epoch_val_loss += val_loss.item()
-
-                        # Calculate reward accuracy
-                        reward_accuracy = self._calculate_reward_accuracy(first_rews, second_rews, batch)
-                        epoch_reward_accuracy += reward_accuracy
-                        num_val_batches_processed += 1
-                    except ValueError as e:
-                        print(f"Warning: {e}. Skipping this validation batch.")
-                        continue
-
-            # Calculate epoch averages
-            avg_train_loss = epoch_train_loss / num_train_batches
-            avg_val_loss = epoch_val_loss / num_val_batches_processed if num_val_batches_processed > 0 else 0
-            avg_reward_accuracy = epoch_reward_accuracy / num_val_batches_processed if num_val_batches_processed > 0 else 0
-
             # Update running totals
-            total_train_loss += avg_train_loss
-            total_val_loss += avg_val_loss
-            total_reward_accuracy += avg_reward_accuracy
+            total_train_loss += epoch_train_loss
+            total_val_loss += epoch_val_loss
+            total_reward_accuracy += epoch_reward_accuracy
 
             # Log metrics to TensorBoard
-            self.writer.add_scalar("reward/train_loss", avg_train_loss, global_step)
-            self.writer.add_scalar("reward/val_loss", avg_val_loss, global_step)
-            self.writer.add_scalar("reward/accuracy", avg_reward_accuracy, global_step)
+            self.writer.add_scalar("reward/train_loss", epoch_train_loss, global_step)
+            self.writer.add_scalar("reward/val_loss", epoch_val_loss, global_step)
+            self.writer.add_scalar("reward/accuracy", epoch_reward_accuracy, global_step)
 
             # Print metrics
-            tqdm.write(f"Epoch {epoch}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Reward Accuracy: {avg_reward_accuracy:.4f}")
+            tqdm.write(f"Epoch {epoch}, Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f}, Reward Accuracy: {epoch_reward_accuracy:.4f}")
 
         # Calculate final averages
         final_train_loss = total_train_loss / self.epochs
