@@ -20,6 +20,18 @@ class RolloutBufferSample:
     dones: th.Tensor
     values: th.Tensor
 
+@dataclass
+class PreferenceBufferSample:
+    first_obs: th.Tensor
+    first_acts: th.Tensor
+    first_rews: th.Tensor
+    first_dones: th.Tensor
+    second_obs: th.Tensor
+    second_acts: th.Tensor
+    second_rews: th.Tensor
+    second_dones: th.Tensor
+    prefs: th.Tensor
+
 class ReplayBuffer:
     obs: th.Tensor
     acts: th.Tensor
@@ -157,3 +169,104 @@ class RolloutBuffer:
             dones=self.dones.reshape(-1),
             values=self.values.reshape(-1),
         )
+
+class PreferenceBuffer:
+    def __init__(self, capacity: int = 1000):
+        """Initialize the preference buffer.
+        
+        Args:
+            capacity: Maximum number of preference pairs to store.
+        """
+        self.capacity = capacity
+        self.size = 0
+        self.pos = 0
+        
+        # Initialize tensors to store preference pairs
+        self.first_obs = []
+        self.first_acts = []
+        self.first_rews = []
+        self.first_dones = []
+        self.second_obs = []
+        self.second_acts = []
+        self.second_rews = []
+        self.second_dones = []
+        self.prefs = []
+
+    def add(self, 
+            first_obs: th.Tensor,
+            first_acts: th.Tensor,
+            first_rews: th.Tensor,
+            first_dones: th.Tensor,
+            second_obs: th.Tensor,
+            second_acts: th.Tensor,
+            second_rews: th.Tensor,
+            second_dones: th.Tensor,
+            prefs: th.Tensor):
+        """Add a preference pair to the buffer.
+        
+        Args:
+            first_obs: First trajectory observations of shape (fragment_length, obs_dim)
+            first_acts: First trajectory actions of shape (fragment_length, act_dim)
+            first_rews: First trajectory rewards of shape (fragment_length, 1)
+            first_dones: First trajectory done flags of shape (fragment_length, 1)
+            second_obs: Second trajectory observations of shape (fragment_length, obs_dim)
+            second_acts: Second trajectory actions of shape (fragment_length, act_dim)
+            second_rews: Second trajectory rewards of shape (fragment_length, 1)
+            second_dones: Second trajectory done flags of shape (fragment_length, 1)
+            prefs: Preference distribution of shape (2,) where [1,0] means first is preferred
+        """
+        if self.size < self.capacity:
+            self.first_obs.append(first_obs)
+            self.first_acts.append(first_acts)
+            self.first_rews.append(first_rews)
+            self.first_dones.append(first_dones)
+            self.second_obs.append(second_obs)
+            self.second_acts.append(second_acts)
+            self.second_rews.append(second_rews)
+            self.second_dones.append(second_dones)
+            self.prefs.append(prefs)
+            self.size += 1
+        else:
+            # Replace oldest entry
+            self.first_obs[self.pos] = first_obs
+            self.first_acts[self.pos] = first_acts
+            self.first_rews[self.pos] = first_rews
+            self.first_dones[self.pos] = first_dones
+            self.second_obs[self.pos] = second_obs
+            self.second_acts[self.pos] = second_acts
+            self.second_rews[self.pos] = second_rews
+            self.second_dones[self.pos] = second_dones
+            self.prefs[self.pos] = prefs
+            self.pos = (self.pos + 1) % self.capacity
+
+    def sample(self, batch_size: int) -> PreferenceBufferSample:
+        """Sample a batch of preference pairs from the buffer.
+        
+        Args:
+            batch_size: Number of preference pairs to sample.
+            
+        Returns:
+            PreferenceBufferSample containing the sampled preference pairs.
+            If there are not enough samples, returns all available samples.
+        """
+        if self.size == 0:
+            raise ValueError("No samples in buffer yet")
+            
+        # If we don't have enough samples, use all available samples
+        actual_batch_size = min(batch_size, self.size)
+        indices = th.randint(0, self.size, (actual_batch_size,))
+        
+        return PreferenceBufferSample(
+            first_obs=th.stack([self.first_obs[i] for i in indices]),
+            first_acts=th.stack([self.first_acts[i] for i in indices]),
+            first_rews=th.stack([self.first_rews[i] for i in indices]),
+            first_dones=th.stack([self.first_dones[i] for i in indices]),
+            second_obs=th.stack([self.second_obs[i] for i in indices]),
+            second_acts=th.stack([self.second_acts[i] for i in indices]),
+            second_rews=th.stack([self.second_rews[i] for i in indices]),
+            second_dones=th.stack([self.second_dones[i] for i in indices]),
+            prefs=th.stack([self.prefs[i] for i in indices])
+        )
+
+    def __len__(self) -> int:
+        return self.size

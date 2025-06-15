@@ -12,7 +12,7 @@ import torch
 import tyro
 from torch.utils.tensorboard import SummaryWriter
 
-from active_rlhf.data.buffers import ReplayBuffer
+from active_rlhf.data.buffers import ReplayBuffer, PreferenceBuffer
 from active_rlhf.data.dataset import PreferenceDataset
 from active_rlhf.rewards.reward_nets import PreferenceModel, RewardEnsemble, RewardTrainer
 
@@ -97,6 +97,8 @@ class Args:
     """the hidden dimensions of the reward network"""
     reward_net_dropout: float = 0.0
     """the dropout rate of the reward network"""
+    reward_net_val_split: float = 0.2
+    """the validation split ratio for the reward network training data"""
     query_schedule: str = "linear"
     """the schedule for querying the reward network"""
     total_queries: int = 400
@@ -174,10 +176,18 @@ if __name__ == "__main__":
         capacity=args.replay_buffer_capacity,
         envs=envs,
     )
+    
+    # Create separate buffers for training and validation
+    train_preference_buffer = PreferenceBuffer(
+        capacity=int(args.total_queries * (1 - args.reward_net_val_split)),
+    )
+    val_preference_buffer = PreferenceBuffer(
+        capacity=int(args.total_queries * args.reward_net_val_split),
+    )
 
     with torch.random.fork_rng(devices=[]):  # empty list=CPU only; pass your GPU devices if needed
         torch.manual_seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)  # if you’re on CUDA
+        torch.cuda.manual_seed_all(args.seed)  # if you're on CUDA
 
         reward_ensemble = RewardEnsemble(
             obs_dim=envs.single_observation_space.shape[0],
@@ -254,6 +264,7 @@ if __name__ == "__main__":
 
         # Train reward network if next step is in query schedule. Be careful as we might overstep the query schedule.
         if next_query_step < len(query_schedule) and global_step >= query_schedule[next_query_step]:
+            # Sample from replay buffer to get trajectory pairs
             reward_samples = replay_buffer.sample(args.reward_net_batch_size*2)
             first_obs = reward_samples.obs[:args.reward_net_batch_size] # shape: [batch_size, fragment_length, obs_dim]
             first_acts = reward_samples.acts[:args.reward_net_batch_size] # shape: [batch_size, fragment_length, act_dim]
@@ -285,20 +296,39 @@ if __name__ == "__main__":
             )
 
             print("Prefs:", prefs)
+            # Add preference pairs to preference buffer
+            for i in range(args.reward_net_batch_size):
+                if torch.rand(1) < (1 - args.reward_net_val_split):  # Use val_split parameter
+                    train_preference_buffer.add(
+                        first_obs=first_obs[i],
+                        first_acts=first_acts[i],
+                        first_rews=first_rews[i],
+                        first_dones=first_dones[i],
+                        second_obs=second_obs[i],
+                        second_acts=second_acts[i],
+                        second_rews=second_rews[i],
+                        second_dones=second_dones[i],
+                        prefs=prefs[i],
+                    )
+                else:  # Use val_split parameter
+                    val_preference_buffer.add(
+                        first_obs=first_obs[i],
+                        first_acts=first_acts[i],
+                        first_rews=first_rews[i],
+                        first_dones=first_dones[i],
+                        second_obs=second_obs[i],
+                        second_acts=second_acts[i],
+                        second_rews=second_rews[i],
+                        second_dones=second_dones[i],
+                        prefs=prefs[i],
+                    )
 
-            preference_dataset = PreferenceDataset(
-                first_obs=first_obs,
-                first_acts=first_acts,
-                first_rews=first_rews,
-                first_dones=first_dones,
-                second_obs=second_obs,
-                second_acts=second_acts,
-                second_rews=second_rews,
-                second_dones=second_dones,
-                prefs=prefs,
-            )
-
-            reward_trainer.train(preference_dataset, global_step)
+            # Train reward network if we have enough samples
+            if len(train_preference_buffer) > 0 and len(val_preference_buffer) > 0:
+                try:
+                    reward_trainer.train(train_preference_buffer, val_preference_buffer, global_step)
+                except ValueError as e:
+                    print(f"Warning: {e}. Skipping reward network training for this iteration.")
 
             next_query_step += 1
 

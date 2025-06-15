@@ -36,5 +36,5 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --reward-net-ensemble-size=3 \
   --reward-net-dropout=0.0 \
   --query-schedule="linear" \
-  --total-queries=400 \
-  --queries-per-session=10
+  --total-queries=3750 \
+  --queries-per-session=50
