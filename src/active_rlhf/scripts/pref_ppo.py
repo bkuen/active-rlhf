@@ -175,13 +175,17 @@ if __name__ == "__main__":
         envs=envs,
     )
 
-    reward_ensemble = RewardEnsemble(
-        obs_dim=envs.single_observation_space.shape[0],
-        act_dim=envs.single_action_space.shape[0],
-        hidden_dims=args.reward_net_hidden_dims,
-        dropout=args.reward_net_dropout,
-        ensemble_size=args.reward_net_ensemble_size,
-    )
+    with torch.random.fork_rng(devices=[]):  # empty list=CPU only; pass your GPU devices if needed
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)  # if you’re on CUDA
+
+        reward_ensemble = RewardEnsemble(
+            obs_dim=envs.single_observation_space.shape[0],
+            act_dim=envs.single_action_space.shape[0],
+            hidden_dims=args.reward_net_hidden_dims,
+            dropout=args.reward_net_dropout,
+            ensemble_size=args.reward_net_ensemble_size,
+        )
 
     preference_model = PreferenceModel(reward_ensemble)
 
@@ -249,35 +253,38 @@ if __name__ == "__main__":
         metrics = agent_trainer.update_policy(rollout_sample=rollout_sample, num_steps=args.num_steps)
 
         # Train reward network if next step is in query schedule. Be careful as we might overstep the query schedule.
-        if False and next_query_step < len(query_schedule) and global_step >= query_schedule[next_query_step]:
+        if next_query_step < len(query_schedule) and global_step >= query_schedule[next_query_step]:
             reward_samples = replay_buffer.sample(args.reward_net_batch_size*2)
-            reward_preds = reward_ensemble.mean_reward(reward_samples.obs, reward_samples.acts)
-
             first_obs = reward_samples.obs[:args.reward_net_batch_size] # shape: [batch_size, fragment_length, obs_dim]
             first_acts = reward_samples.acts[:args.reward_net_batch_size] # shape: [batch_size, fragment_length, act_dim]
+            first_rews = reward_samples.rews[:args.reward_net_batch_size]  # shape: [batch_size, fragment_length]
             first_dones = reward_samples.dones[:args.reward_net_batch_size] # shape: [batch_size, fragment_length]
             second_obs = reward_samples.obs[args.reward_net_batch_size:] # shape: [batch_size, fragment_length, obs_dim]
             second_acts = reward_samples.acts[args.reward_net_batch_size:] # shape: [batch_size, fragment_length, act_dim]
+            second_rews = reward_samples.rews[args.reward_net_batch_size:]  # shape: [batch_size, fragment_length]
             second_dones = reward_samples.dones[args.reward_net_batch_size:] # shape: [batch_size, fragment_length]
 
-            first_rews = reward_preds[:args.reward_net_batch_size]  # shape: [batch_size, fragment_length]
-            second_rews = reward_preds[args.reward_net_batch_size:]  # shape: [batch_size, fragment_length]
-            first_returns = first_rews.sum(dim=-1)
-            second_returns = second_rews.sum(dim=-1)
-            
-            # Generate preferences based on returns
-            # If returns are significantly different, prefer the better one
-            return_diff = (first_returns - second_returns).abs()
-            return_sum = (first_returns + second_returns).abs()
-            relative_diff = return_diff / (return_sum + 1e-8)  # Add small epsilon to avoid division by zero
+            first_returns = first_rews.squeeze().sum(dim=-1)
+            second_returns = second_rews.squeeze().sum(dim=-1)
             
             # Initialize preferences tensor
-            prefs = torch.zeros((args.reward_net_batch_size, 2), device=device)
-            
-            # Prefer the better trajectory
-            first_better = first_returns.sum(dim=-1) > second_returns.sum(dim=-1)
-            prefs[first_better] = torch.tensor([1.0, 0.0], device=device)
-            prefs[~first_better] = torch.tensor([0.0, 1.0], device=device)
+
+            print("First rews shape:", first_rews.shape)
+            print("Second rews shape:", second_rews.shape)
+
+            print("First returns shape:", first_returns.shape)
+            print("Second returns shape:", second_returns.shape)
+
+            print("First returns:", first_returns)
+            print("Second returns:", second_returns)
+
+            prefs = torch.stack(
+                [(first_returns > second_returns).float(),
+                 (second_returns >= first_returns).float()],
+                dim=1,
+            )
+
+            print("Prefs:", prefs)
 
             preference_dataset = PreferenceDataset(
                 first_obs=first_obs,

@@ -234,10 +234,13 @@ class AgentTrainer:
         with th.no_grad():
             obs = rollout_sample.obs.reshape((-1,) + self.envs.single_observation_space.shape)
             acts = rollout_sample.actions.reshape((-1,) + self.envs.single_action_space.shape)
-            reward_preds = self.reward_ensemble.mean_reward(obs, acts)
+            reward_preds = self.reward_ensemble.mean_reward(obs, acts).unsqueeze(-1)
+
+            print("Reward predictions shape:", reward_preds.shape)
+            print("Ground truth rewards shape:", rollout_sample.ground_truth_rewards.shape)
 
             next_value = self.agent.get_value(self.next_obs).reshape(1, -1)
-            advantages = th.zeros_like(rollout_sample.ground_truth_rewards).to(self.device)
+            advantages = th.zeros_like(reward_preds).to(self.device)
             lastgaelam = 0
             for t in reversed(range(num_steps)):
                 if t == num_steps - 1:
@@ -246,7 +249,7 @@ class AgentTrainer:
                 else:
                     nextnonterminal = 1.0 - rollout_sample.dones[t + 1]
                     nextvalues = rollout_sample.values[t + 1]
-                delta = rollout_sample.ground_truth_rewards[t] + self.gamma * nextvalues * nextnonterminal - rollout_sample.values[t]
+                delta = reward_preds[t] + self.gamma * nextvalues * nextnonterminal - rollout_sample.values[t]
                 advantages[t] = lastgaelam = delta + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam
             returns = advantages + rollout_sample.values
 

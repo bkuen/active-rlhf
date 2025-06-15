@@ -1,3 +1,4 @@
+import os
 from typing import List, Optional
 
 from tqdm import tqdm
@@ -14,7 +15,7 @@ class RewardNet(nn.Module):
     def __init__(self,
                  obs_dim: int,
                  act_dim: int,
-                 hidden_dims: List[int] = [128, 64, 32],
+                 hidden_dims: List[int] = [256, 256, 256],
                  dropout: float = 0.1,
                  ):
         super(RewardNet, self).__init__()
@@ -47,8 +48,13 @@ class RewardNet(nn.Module):
         Returns:
             The rewards of shape (batch_size, fragment_size, 1).
         """
-        return self.net(th.cat([obs, act], dim=-1))
-    
+        print("RewardNet forward pass:")
+        x = self.net(th.cat([obs, act], dim=-1))
+        print("x shape:", x.shape)
+        x = x.squeeze(-1)
+        print("x shape after squeeze:", x.shape)
+        return x
+
 class RewardEnsemble(nn.Module):
     def __init__(self,
                  obs_dim: int,
@@ -91,10 +97,10 @@ class RewardEnsemble(nn.Module):
         print("Computing mean reward across ensemble members.")
         print(f"obs shape: {obs.shape}, act shape: {act.shape}")
 
-        with th.no_grad():
-            rewards = self.forward(obs, act)
+        rewards = self.forward(obs, act)
+        mean = rewards.mean(dim=-1).squeeze(-1)
 
-        return rewards.mean(dim=-1)
+        return mean
     
 class PreferenceModel(nn.Module):
     def __init__(self, ensemble: RewardEnsemble):
@@ -132,9 +138,19 @@ class PreferenceModel(nn.Module):
             The probability distribution over preferences of shape (batch_size, ensemble_size, 2).
         """
         # sum over fragment_size
+        print("Computing preference probabilities:")
+        print("First rews shape:", first_rews.shape)
+        print("Second rews shape:", second_rews.shape)
+
         first_exp = first_rews.sum(dim=1)
         second_exp = second_rews.sum(dim=1)
+
+        print("First exp shape:", first_exp.shape)
+        print("Second exp shape:", second_exp.shape)
+
         probs = self.softmax(th.stack([first_exp, second_exp], dim=-1)) # shape (batch_size, ensemble_size, 2)
+
+        print("Probs shape:", probs.shape)
         return probs
         
     def loss(self, probs: th.Tensor, prefs: th.Tensor) -> th.Tensor:
@@ -147,11 +163,20 @@ class PreferenceModel(nn.Module):
         Returns:
             The average loss across all ensemble members.
         """
-        # Expand preferences to match ensemble size
-        prefs = prefs.unsqueeze(1).expand(-1, probs.shape[1], -1)  # shape (batch_size, ensemble_size, 2)
-        # Compute cross entropy loss for each ensemble member
-        losses = -th.sum(prefs * th.log(probs + 1e-8), dim=-1)  # shape (batch_size, ensemble_size)
-        # Average across ensemble members
+        # # Expand preferences to match ensemble size
+        # prefs = prefs.unsqueeze(1).expand(-1, probs.shape[1], -1)  # shape (batch_size, ensemble_size, 2)
+        # # Compute cross entropy loss for each ensemble member
+        # probs = probs.mean(dim=2)
+        # losses = -th.sum(prefs * th.log(probs + 1e-8), dim=-1)  # shape (batch_size, ensemble_size)
+        # print("Prefs shape:", prefs.shape)
+        # print("Probs shape:", probs.shape)
+        #
+        # # Average across ensemble members
+        # return losses.mean()
+        prefs = prefs.unsqueeze(1).expand(-1, probs.shape[1], -1)  # (B,E,2)
+
+        log_probs = th.log(probs + 1e-8)  # (B,E,2)
+        losses = -(prefs * log_probs).sum(-1)  # (B,E)
         return losses.mean()
 
 class RewardTrainer:
@@ -251,6 +276,7 @@ class RewardTrainer:
                 # Backward pass
                 self.optimizer.zero_grad()
                 loss.backward()
+                nn.utils.clip_grad_norm_(self.preference_model.ensemble.parameters(), max_norm=1.0)
                 self.optimizer.step()
 
             # Validation phase

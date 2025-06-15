@@ -58,7 +58,6 @@ class ReplayBuffer:
             self.rews[start_idx:end_idx] = rew[:]
             self.dones[start_idx:end_idx] = done[:]
 
-            self.size = min(self.size + fragment_length, self.capacity)
         else:
             overwrite_length = end_idx - self.capacity
             self.obs[start_idx:self.capacity] = obs[:(fragment_length - overwrite_length)]
@@ -72,17 +71,13 @@ class ReplayBuffer:
             self.dones[:overwrite_length] = done[(fragment_length - overwrite_length):]
 
         self.pos = (self.pos + fragment_length) % self.capacity
+        self.size = min(self.size + fragment_length, self.capacity)
 
     def add_rollout(self, rollout: RolloutBufferSample):
         obs = rollout.obs.reshape((-1,) + self.envs.single_observation_space.shape)
         acts = rollout.actions.reshape((-1,) + self.envs.single_action_space.shape)
         rews = rollout.ground_truth_rewards.reshape(-1)
         dones = rollout.dones.reshape(-1)
-
-        print("Rollout observations shape:", obs.shape)
-        print("Rollout actions shape:", acts.shape)
-        print("Rollout rewards shape:", rews.shape)
-        print("Rollout dones shape:", dones.shape)
 
         """Add a rollout of transitions to the buffer."""
         self.add(
@@ -98,6 +93,21 @@ class ReplayBuffer:
         max_size = min(self.size, self.capacity)
         start_indices = th.randint(0, max_size, (batch_size,))
         indices = (start_indices[:, None] + th.arange(self.fragment_length)[None, :]) % max_size
+        return ReplayBufferSample(
+            obs=self.obs[indices].view(batch_size, self.fragment_length, -1),
+            acts=self.acts[indices].view(batch_size, self.fragment_length, -1),
+            rews=self.rews[indices].view(batch_size, self.fragment_length, -1),
+            dones=self.dones[indices].view(batch_size, self.fragment_length, -1)
+        )
+
+    def sample_last(self, batch_size: int) -> ReplayBufferSample:
+        """Sample the last batch of transitions from the buffer."""
+        if self.size < batch_size:
+            raise ValueError("Not enough data in the buffer to sample the last batch.")
+
+        start_idx = (self.pos - batch_size * self.fragment_length) % self.capacity
+        indices = (start_idx + th.arange(batch_size * self.fragment_length)) % self.capacity
+
         return ReplayBufferSample(
             obs=self.obs[indices].view(batch_size, self.fragment_length, -1),
             acts=self.acts[indices].view(batch_size, self.fragment_length, -1),

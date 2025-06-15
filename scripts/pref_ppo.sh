@@ -28,13 +28,13 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --max-grad-norm=0.5 \
   --target-kl=None \
   --replay-buffer-capacity=1000000 \
-  --reward-net-epochs=3 \
+  --reward-net-epochs=15 \
   --reward-net-lr=1e-3 \
-  --reward-net-weight-decay=0.0 \
+  --reward-net-weight-decay=1e-4 \
   --reward-net-batch-size=32 \
   --reward-net-minibatch-size=32 \
   --reward-net-ensemble-size=3 \
   --reward-net-dropout=0.0 \
   --query-schedule="linear" \
-  --total-queries=3000 \
+  --total-queries=400 \
   --queries-per-session=10
