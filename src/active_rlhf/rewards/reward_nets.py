@@ -153,31 +153,35 @@ class PreferenceModel(nn.Module):
         print("Probs shape:", probs.shape)
         return probs
         
-    def loss(self, probs: th.Tensor, prefs: th.Tensor) -> th.Tensor:
-        """Compute the cross entropy loss for the preference model.
-        
-        Args:
-            probs: The probability distribution over preferences of shape (batch_size, ensemble_size, 2).
-            prefs: The ground truth preference distribution of shape (batch_size, 2).
-
-        Returns:
-            The average loss across all ensemble members.
+    def loss(self, probs: th.Tensor, prefs: th.Tensor, eps: float = 1e-8) -> th.Tensor:
         """
-        # # Expand preferences to match ensemble size
-        # prefs = prefs.unsqueeze(1).expand(-1, probs.shape[1], -1)  # shape (batch_size, ensemble_size, 2)
-        # # Compute cross entropy loss for each ensemble member
-        # probs = probs.mean(dim=2)
-        # losses = -th.sum(prefs * th.log(probs + 1e-8), dim=-1)  # shape (batch_size, ensemble_size)
-        # print("Prefs shape:", prefs.shape)
-        # print("Probs shape:", probs.shape)
-        #
-        # # Average across ensemble members
-        # return losses.mean()
-        prefs = prefs.unsqueeze(1).expand(-1, probs.shape[1], -1)  # (B,E,2)
+        Cross-entropy loss between predicted preference distribution
+        and ground-truth preferences.
 
-        log_probs = th.log(probs + 1e-8)  # (B,E,2)
-        losses = -(prefs * log_probs).sum(-1)  # (B,E)
-        return losses.mean()
+        Args
+        ----
+        probs : Tensor, shape (B, E, 2)
+            Output of `preference_probs` – already passed through softmax.
+        prefs : Tensor, shape (B, 2)
+            Target distribution over the two trajectories.  Each row is
+            either one-hot ([1,0] or [0,1]) or a soft target such as [0.5,0.5].
+
+        Returns
+        -------
+        Tensor (scalar): Mean loss across batch and ensemble members.
+        """
+        print("Computing loss for preference model:")
+        print("Prefs shape:", prefs.shape)
+        print("Probs shape:", probs.shape)
+        # Expand targets across the ensemble dimension → (B, E, 2)
+        prefs_expanded = prefs.unsqueeze(1).expand_as(probs)
+
+        # Safe log and element-wise cross entropy
+        log_probs = th.log(probs.clamp_min(eps))  # (B, E, 2)
+        per_member_ce = -(prefs_expanded * log_probs).sum(dim=-1)  # (B, E)
+
+        # First average over ensemble, then over batch
+        return per_member_ce.mean()
 
 class RewardTrainer:
     def __init__(self, 
