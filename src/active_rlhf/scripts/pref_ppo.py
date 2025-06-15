@@ -8,13 +8,14 @@ from typing import List
 from active_rlhf.algorithms.pref_ppo import Agent, AgentTrainer
 import gymnasium as gym
 import numpy as np
-import torch
+import torch as th
 import tyro
 from torch.utils.tensorboard import SummaryWriter
 
-from active_rlhf.data.buffers import ReplayBuffer, PreferenceBuffer
+from active_rlhf.data.buffers import ReplayBuffer, PreferenceBuffer, PreferenceBufferBatch
 from active_rlhf.data.dataset import PreferenceDataset
 from active_rlhf.rewards.reward_nets import PreferenceModel, RewardEnsemble, RewardTrainer
+from active_rlhf.queries.selector import RandomSelector, RandomSelectorSimple
 
 
 @dataclass
@@ -160,10 +161,10 @@ if __name__ == "__main__":
     # TRY NOT TO MODIFY: seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
+    th.manual_seed(args.seed)
+    th.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = th.device("cuda" if th.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
@@ -185,9 +186,12 @@ if __name__ == "__main__":
         capacity=int(args.total_queries * args.reward_net_val_split),
     )
 
-    with torch.random.fork_rng(devices=[]):  # empty list=CPU only; pass your GPU devices if needed
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)  # if you're on CUDA
+    # Initialize selector
+    selector = RandomSelectorSimple()
+
+    with th.random.fork_rng(devices=[]):  # empty list=CPU only; pass your GPU devices if needed
+        th.manual_seed(args.seed)
+        th.cuda.manual_seed_all(args.seed)  # if you're on CUDA
 
         reward_ensemble = RewardEnsemble(
             obs_dim=envs.single_observation_space.shape[0],
@@ -265,63 +269,64 @@ if __name__ == "__main__":
         # Train reward network if next step is in query schedule. Be careful as we might overstep the query schedule.
         if next_query_step < len(query_schedule) and global_step >= query_schedule[next_query_step]:
             # Sample from replay buffer to get trajectory pairs
-            reward_samples = replay_buffer.sample(args.reward_net_batch_size*2)
-            first_obs = reward_samples.obs[:args.reward_net_batch_size] # shape: [batch_size, fragment_length, obs_dim]
-            first_acts = reward_samples.acts[:args.reward_net_batch_size] # shape: [batch_size, fragment_length, act_dim]
-            first_rews = reward_samples.rews[:args.reward_net_batch_size]  # shape: [batch_size, fragment_length]
-            first_dones = reward_samples.dones[:args.reward_net_batch_size] # shape: [batch_size, fragment_length]
-            second_obs = reward_samples.obs[args.reward_net_batch_size:] # shape: [batch_size, fragment_length, obs_dim]
-            second_acts = reward_samples.acts[args.reward_net_batch_size:] # shape: [batch_size, fragment_length, act_dim]
-            second_rews = reward_samples.rews[args.reward_net_batch_size:]  # shape: [batch_size, fragment_length]
-            second_dones = reward_samples.dones[args.reward_net_batch_size:] # shape: [batch_size, fragment_length]
+            num_pairs = args.queries_per_session if next_query_step is not 0 else 32
+            reward_samples = replay_buffer.sample(num_pairs*2)
 
-            first_returns = first_rews.squeeze().sum(dim=-1)
-            second_returns = second_rews.squeeze().sum(dim=-1)
+            # Use selector to get trajectory pairs
+            trajectory_pairs = selector.select_pairs(reward_samples, num_pairs=num_pairs)
             
-            # Initialize preferences tensor
-
-            print("First rews shape:", first_rews.shape)
-            print("Second rews shape:", second_rews.shape)
-
-            print("First returns shape:", first_returns.shape)
-            print("Second returns shape:", second_returns.shape)
-
-            print("First returns:", first_returns)
-            print("Second returns:", second_returns)
-
-            prefs = torch.stack(
+            # Calculate preferences based on returns
+            first_returns = trajectory_pairs.first_rews.squeeze().sum(dim=-1)
+            second_returns = trajectory_pairs.second_rews.squeeze().sum(dim=-1)
+            
+            # Create preference tensor where [1,0] means first is preferred
+            prefs = th.stack(
                 [(first_returns > second_returns).float(),
                  (second_returns >= first_returns).float()],
                 dim=1,
             )
-
-            print("Prefs:", prefs)
-            # Add preference pairs to preference buffer
-            for i in range(args.reward_net_batch_size):
-                if torch.rand(1) < (1 - args.reward_net_val_split):  # Use val_split parameter
-                    train_preference_buffer.add(
-                        first_obs=first_obs[i],
-                        first_acts=first_acts[i],
-                        first_rews=first_rews[i],
-                        first_dones=first_dones[i],
-                        second_obs=second_obs[i],
-                        second_acts=second_acts[i],
-                        second_rews=second_rews[i],
-                        second_dones=second_dones[i],
-                        prefs=prefs[i],
-                    )
-                else:  # Use val_split parameter
-                    val_preference_buffer.add(
-                        first_obs=first_obs[i],
-                        first_acts=first_acts[i],
-                        first_rews=first_rews[i],
-                        first_dones=first_dones[i],
-                        second_obs=second_obs[i],
-                        second_acts=second_acts[i],
-                        second_rews=second_rews[i],
-                        second_dones=second_dones[i],
-                        prefs=prefs[i],
-                    )
+            
+            # Create preference batch
+            preference_batch = PreferenceBufferBatch(
+                first_obs=trajectory_pairs.first_obs,
+                first_acts=trajectory_pairs.first_acts,
+                first_rews=trajectory_pairs.first_rews,
+                first_dones=trajectory_pairs.first_dones,
+                second_obs=trajectory_pairs.second_obs,
+                second_acts=trajectory_pairs.second_acts,
+                second_rews=trajectory_pairs.second_rews,
+                second_dones=trajectory_pairs.second_dones,
+                prefs=prefs
+            )
+            
+            # Split into train and validation based on val_split parameter
+            train_size = int(args.reward_net_batch_size * (1 - args.reward_net_val_split))
+            train_batch = PreferenceBufferBatch(
+                first_obs=preference_batch.first_obs[:train_size],
+                first_acts=preference_batch.first_acts[:train_size],
+                first_rews=preference_batch.first_rews[:train_size],
+                first_dones=preference_batch.first_dones[:train_size],
+                second_obs=preference_batch.second_obs[:train_size],
+                second_acts=preference_batch.second_acts[:train_size],
+                second_rews=preference_batch.second_rews[:train_size],
+                second_dones=preference_batch.second_dones[:train_size],
+                prefs=preference_batch.prefs[:train_size]
+            )
+            val_batch = PreferenceBufferBatch(
+                first_obs=preference_batch.first_obs[train_size:],
+                first_acts=preference_batch.first_acts[train_size:],
+                first_rews=preference_batch.first_rews[train_size:],
+                first_dones=preference_batch.first_dones[train_size:],
+                second_obs=preference_batch.second_obs[train_size:],
+                second_acts=preference_batch.second_acts[train_size:],
+                second_rews=preference_batch.second_rews[train_size:],
+                second_dones=preference_batch.second_dones[train_size:],
+                prefs=preference_batch.prefs[train_size:]
+            )
+            
+            # Add to respective buffers
+            train_preference_buffer.add(train_batch)
+            val_preference_buffer.add(val_batch)
 
             assert len(train_preference_buffer) <= args.total_queries
             assert len(val_preference_buffer) <= args.total_queries
@@ -354,7 +359,7 @@ if __name__ == "__main__":
 
     if args.save_model:
         model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
-        torch.save(agent.state_dict(), model_path)
+        th.save(agent.state_dict(), model_path)
         print(f"model saved to {model_path}")
         # from cleanrl_utils.evals.ppo_eval import evaluate
         #

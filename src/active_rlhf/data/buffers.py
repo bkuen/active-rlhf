@@ -5,14 +5,14 @@ from gymnasium.vector import SyncVectorEnv
 from dataclasses import dataclass
 
 @dataclass
-class ReplayBufferSample:
+class ReplayBufferBatch:
     obs: th.Tensor
     acts: th.Tensor
     rews: th.Tensor
     dones: th.Tensor
 
 @dataclass
-class RolloutBufferSample:
+class RolloutBufferBatch:
     obs: th.Tensor
     actions: th.Tensor
     logprobs: th.Tensor
@@ -21,7 +21,7 @@ class RolloutBufferSample:
     values: th.Tensor
 
 @dataclass
-class PreferenceBufferSample:
+class TrajectoryPairBatch:
     first_obs: th.Tensor
     first_acts: th.Tensor
     first_rews: th.Tensor
@@ -30,6 +30,9 @@ class PreferenceBufferSample:
     second_acts: th.Tensor
     second_rews: th.Tensor
     second_dones: th.Tensor
+
+@dataclass
+class PreferenceBufferBatch(TrajectoryPairBatch):
     prefs: th.Tensor
 
 class ReplayBuffer:
@@ -85,7 +88,7 @@ class ReplayBuffer:
         self.pos = (self.pos + fragment_length) % self.capacity
         self.size = min(self.size + fragment_length, self.capacity)
 
-    def add_rollout(self, rollout: RolloutBufferSample):
+    def add_rollout(self, rollout: RolloutBufferBatch):
         obs = rollout.obs.reshape((-1,) + self.envs.single_observation_space.shape)
         acts = rollout.actions.reshape((-1,) + self.envs.single_action_space.shape)
         rews = rollout.ground_truth_rewards.reshape(-1)
@@ -100,27 +103,12 @@ class ReplayBuffer:
         )
 
 
-    def sample(self, batch_size: int) -> ReplayBufferSample:
+    def sample(self, batch_size: int) -> ReplayBufferBatch:
         """Sample a batch of transitions from the buffer."""
         max_size = min(self.size, self.capacity)
         start_indices = th.randint(0, max_size, (batch_size,))
         indices = (start_indices[:, None] + th.arange(self.fragment_length)[None, :]) % max_size
-        return ReplayBufferSample(
-            obs=self.obs[indices].view(batch_size, self.fragment_length, -1),
-            acts=self.acts[indices].view(batch_size, self.fragment_length, -1),
-            rews=self.rews[indices].view(batch_size, self.fragment_length, -1),
-            dones=self.dones[indices].view(batch_size, self.fragment_length, -1)
-        )
-
-    def sample_last(self, batch_size: int) -> ReplayBufferSample:
-        """Sample the last batch of transitions from the buffer."""
-        if self.size < batch_size:
-            raise ValueError("Not enough data in the buffer to sample the last batch.")
-
-        start_idx = (self.pos - batch_size * self.fragment_length) % self.capacity
-        indices = (start_idx + th.arange(batch_size * self.fragment_length)) % self.capacity
-
-        return ReplayBufferSample(
+        return ReplayBufferBatch(
             obs=self.obs[indices].view(batch_size, self.fragment_length, -1),
             acts=self.acts[indices].view(batch_size, self.fragment_length, -1),
             rews=self.rews[indices].view(batch_size, self.fragment_length, -1),
@@ -149,8 +137,8 @@ class RolloutBuffer:
         self.dones[step] = done
         self.values[step] = value
 
-    def get_batch(self) -> RolloutBufferSample:
-        return RolloutBufferSample(
+    def get_batch(self) -> RolloutBufferBatch:
+        return RolloutBufferBatch(
             obs=self.obs,
             actions=self.actions,
             logprobs=self.logprobs,
@@ -159,9 +147,9 @@ class RolloutBuffer:
             values=self.values
         )
 
-    def get_flattened_batch(self) -> RolloutBufferSample:
+    def get_flattened_batch(self) -> RolloutBufferBatch:
         """Returns a flattened version of the buffer."""
-        return RolloutBufferSample(
+        return RolloutBufferBatch(
             obs=self.obs.reshape((-1,) + self.envs.single_observation_space.shape),
             actions=self.actions.reshape((-1,) + self.envs.single_action_space.shape),
             logprobs=self.logprobs.reshape(-1),
@@ -192,54 +180,40 @@ class PreferenceBuffer:
         self.second_dones = []
         self.prefs = []
 
-    def add(self, 
-            first_obs: th.Tensor,
-            first_acts: th.Tensor,
-            first_rews: th.Tensor,
-            first_dones: th.Tensor,
-            second_obs: th.Tensor,
-            second_acts: th.Tensor,
-            second_rews: th.Tensor,
-            second_dones: th.Tensor,
-            prefs: th.Tensor):
-        """Add a preference pair to the buffer.
+    def add(self, batch: PreferenceBufferBatch):
+        """Add preference pairs to the buffer.
         
         Args:
-            first_obs: First trajectory observations of shape (fragment_length, obs_dim)
-            first_acts: First trajectory actions of shape (fragment_length, act_dim)
-            first_rews: First trajectory rewards of shape (fragment_length, 1)
-            first_dones: First trajectory done flags of shape (fragment_length, 1)
-            second_obs: Second trajectory observations of shape (fragment_length, obs_dim)
-            second_acts: Second trajectory actions of shape (fragment_length, act_dim)
-            second_rews: Second trajectory rewards of shape (fragment_length, 1)
-            second_dones: Second trajectory done flags of shape (fragment_length, 1)
-            prefs: Preference distribution of shape (2,) where [1,0] means first is preferred
+            batch: PreferenceBufferBatch containing the preference pairs to add
         """
-        if self.size < self.capacity:
-            self.first_obs.append(first_obs)
-            self.first_acts.append(first_acts)
-            self.first_rews.append(first_rews)
-            self.first_dones.append(first_dones)
-            self.second_obs.append(second_obs)
-            self.second_acts.append(second_acts)
-            self.second_rews.append(second_rews)
-            self.second_dones.append(second_dones)
-            self.prefs.append(prefs)
-            self.size += 1
-        else:
-            # Replace oldest entry
-            self.first_obs[self.pos] = first_obs
-            self.first_acts[self.pos] = first_acts
-            self.first_rews[self.pos] = first_rews
-            self.first_dones[self.pos] = first_dones
-            self.second_obs[self.pos] = second_obs
-            self.second_acts[self.pos] = second_acts
-            self.second_rews[self.pos] = second_rews
-            self.second_dones[self.pos] = second_dones
-            self.prefs[self.pos] = prefs
-            self.pos = (self.pos + 1) % self.capacity
+        batch_size = batch.first_obs.shape[0]
+        
+        for i in range(batch_size):
+            if self.size < self.capacity:
+                self.first_obs.append(batch.first_obs[i])
+                self.first_acts.append(batch.first_acts[i])
+                self.first_rews.append(batch.first_rews[i])
+                self.first_dones.append(batch.first_dones[i])
+                self.second_obs.append(batch.second_obs[i])
+                self.second_acts.append(batch.second_acts[i])
+                self.second_rews.append(batch.second_rews[i])
+                self.second_dones.append(batch.second_dones[i])
+                self.prefs.append(batch.prefs[i])
+                self.size += 1
+            else:
+                # Replace oldest entry
+                self.first_obs[self.pos] = batch.first_obs[i]
+                self.first_acts[self.pos] = batch.first_acts[i]
+                self.first_rews[self.pos] = batch.first_rews[i]
+                self.first_dones[self.pos] = batch.first_dones[i]
+                self.second_obs[self.pos] = batch.second_obs[i]
+                self.second_acts[self.pos] = batch.second_acts[i]
+                self.second_rews[self.pos] = batch.second_rews[i]
+                self.second_dones[self.pos] = batch.second_dones[i]
+                self.prefs[self.pos] = batch.prefs[i]
+                self.pos = (self.pos + 1) % self.capacity
 
-    def sample(self, batch_size: int) -> PreferenceBufferSample:
+    def sample(self, batch_size: int) -> PreferenceBufferBatch:
         """Sample a batch of preference pairs from the buffer.
         
         Args:
@@ -256,7 +230,7 @@ class PreferenceBuffer:
         actual_batch_size = min(batch_size, self.size)
         indices = th.randint(0, self.size, (actual_batch_size,))
         
-        return PreferenceBufferSample(
+        return PreferenceBufferBatch(
             first_obs=th.stack([self.first_obs[i] for i in indices]),
             first_acts=th.stack([self.first_acts[i] for i in indices]),
             first_rews=th.stack([self.first_rews[i] for i in indices]),

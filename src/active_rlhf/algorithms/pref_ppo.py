@@ -6,7 +6,7 @@ from gymnasium.vector import SyncVectorEnv
 from torch.distributions.normal import Normal
 import numpy as np
 
-from active_rlhf.data.buffers import RolloutBuffer, RolloutBufferSample
+from active_rlhf.data.buffers import RolloutBuffer, RolloutBufferBatch
 from active_rlhf.rewards.reward_nets import RewardEnsemble
 
 
@@ -117,7 +117,7 @@ class AgentTrainer:
             lrnow = frac * self.lr
             self.optimizer.param_groups[0]["lr"] = lrnow
 
-    def collect_rollout(self, global_step: int, num_steps: int) -> Tuple[RolloutBufferSample, List[RolloutEpisodeInfo]]:
+    def collect_rollout(self, global_step: int, num_steps: int) -> Tuple[RolloutBufferBatch, List[RolloutEpisodeInfo]]:
         episode_infos = []
 
         rollout_buffer = RolloutBuffer(num_steps=num_steps, num_envs=self.num_envs, envs=self.envs, device=self.device)
@@ -152,7 +152,7 @@ class AgentTrainer:
 
         return rollout_buffer.get_batch(), episode_infos
 
-    def update_policy(self, rollout_sample: RolloutBufferSample, num_steps: int):
+    def update_policy(self, rollout_sample: RolloutBufferBatch, num_steps: int):
         advantages, returns = self._compute_gaes(rollout_sample, num_steps)
 
         b_obs = rollout_sample.obs.reshape((-1,) + self.envs.single_observation_space.shape)
@@ -230,7 +230,7 @@ class AgentTrainer:
             explained_var=explained_var
         )
 
-    def _compute_gaes(self, rollout_sample: RolloutBufferSample, num_steps: int):
+    def _compute_gaes(self, rollout_sample: RolloutBufferBatch, num_steps: int):
         with th.no_grad():
             obs = rollout_sample.obs.reshape((-1,) + self.envs.single_observation_space.shape)
             acts = rollout_sample.actions.reshape((-1,) + self.envs.single_action_space.shape)
