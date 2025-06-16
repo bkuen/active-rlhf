@@ -1,5 +1,6 @@
 # Project-specific
 runs/
+runs2/
 wandb/
 
 # Byte-compiled / optimized / DLL files
