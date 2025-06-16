@@ -4,7 +4,7 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --torch-deterministic=True \
   --cuda=True \
   --track=True \
-  --wandb-project-name="active-rlhf" \
+  --wandb-project-name="active-rlhf-duo" \
   --wandb-entity="bkuen-ludwig-maximilianuniversity-of-munich" \
   --capture-video=False \
   --save-model=True \
@@ -39,8 +39,8 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --query-schedule="linear" \
   --total-queries=500 \
   --queries-per-session=10 \
-  --selector-type="random" \
-  --oversampling-factor=2.0 \
+  --selector-type="duo" \
+  --oversampling-factor=10.0 \
   --fragment-length=50 \
   --variquery-vae-latent-dim=16 \
   --variquery-vae-lr=1e-3 \
@@ -48,4 +48,5 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --variquery-vae-batch-size=32 \
   --variquery-vae-num-epochs=100 \
   --variquery-vae-dropout=0.1 \
-  --variquery-vae-kl-weight=1.0
+  --variquery-vae-kl-weight=1.0 \
+  --duo-consensual-filter=False

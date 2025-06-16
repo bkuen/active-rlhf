@@ -1,4 +1,4 @@
-from typing import TypedDict
+from typing import TypedDict, Union, Sequence
 
 import torch as th
 from gymnasium.vector import SyncVectorEnv
@@ -34,6 +34,26 @@ class TrajectoryPairBatch:
     def __len__(self) -> int:
         """Return the number of pairs in the batch."""
         return self.first_obs.shape[0]
+
+    Index = Union[
+        int,  # e.g. 3
+        slice,  # e.g. 2:10
+        Sequence[int],  # e.g. [0, 4, 7]
+        th.Tensor  # 1-D bool or long tensor
+    ]
+
+    def __getitem__(self, idx: Index) -> 'TrajectoryPairBatch':
+        return TrajectoryPairBatch(
+            first_obs=self.first_obs[idx],
+            first_acts=self.first_acts[idx],
+            first_rews=self.first_rews[idx],
+            first_dones=self.first_dones[idx],
+            second_obs=self.second_obs[idx],
+            second_acts=self.second_acts[idx],
+            second_rews=self.second_rews[idx],
+            second_dones=self.second_dones[idx],
+        )
+
 
 @dataclass
 class PreferenceBufferBatch(TrajectoryPairBatch):

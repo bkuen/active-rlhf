@@ -33,15 +33,13 @@ class RandomSelector(Selector):
         Returns:
             TrajectoryPairBatch containing randomly selected pairs
         """
-        batch_size = batch.obs.shape[0]
-        
         # Randomly select indices for first and second trajectories
-        first_indices = th.randperm(batch_size)
-        second_indices = th.randperm(batch_size)
+        first_indices = th.randperm(num_pairs)
         
-        # Ensure we don't pair a trajectory with itself
-        while th.any(first_indices == second_indices):
-            second_indices = th.randperm(batch_size)
+        # Create second indices by shifting the first indices by a random offset
+        # This ensures no self-pairing while maintaining randomness
+        shift = th.randint(1, num_pairs, (1,)).item()
+        second_indices = (first_indices + shift) % num_pairs
         
         return TrajectoryPairBatch(
             first_obs=batch.obs[first_indices],

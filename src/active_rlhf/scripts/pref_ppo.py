@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Literal
 
+from active_rlhf.algorithms.duo.selector import DUOSelector
 from active_rlhf.algorithms.pref_ppo import Agent, AgentTrainer
 from active_rlhf.algorithms.variquery.selector import VARIQuerySelector
 import gymnasium as gym
@@ -109,7 +110,7 @@ class Args:
     """the total number of queries to send to the teacher"""
     queries_per_session: int = 10
     """the number of queries to send to the teacher per session"""
-    selector_type: Literal["random", "variquery"] = "random"
+    selector_type: Literal["random", "variquery", "duo"] = "random"
     """type of selector to use for query selection"""
     oversampling_factor: float = 2.0
     """the oversampling factor for the selector"""
@@ -133,6 +134,10 @@ class Args:
     """dropout rate for the VAE"""
     variquery_vae_kl_weight: float = 1.0
     """weight of the KL loss term in VAE training"""
+
+    # DUO specific arguments
+    duo_consensual_filter: bool = False
+    """whether to use the consensual filter"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -247,25 +252,34 @@ if __name__ == "__main__":
     print(f"Query schedule: {query_schedule}")
 
     # Initialize selector
-    if args.selector_type == "random":
-        selector = RandomSelectorSimple()
-    elif args.selector_type == "variquery":
-        # Initialize VARIQuery selector
-        selector = VARIQuerySelector(
-            writer=writer,
-            reward_ensemble=reward_ensemble,
-            fragment_length=args.fragment_length,
-            vae_latent_dim=args.variquery_vae_latent_dim,
-            vae_hidden_dims=args.variquery_vae_hidden_dims,
-            vae_lr=args.variquery_vae_lr,
-            vae_weight_decay=args.variquery_vae_weight_decay,
-            vae_dropout=args.variquery_vae_dropout,
-            vae_batch_size=args.variquery_vae_batch_size,
-            vae_num_epochs=args.variquery_vae_num_epochs,
-            device=device,
-        )
-    else:
-        raise ValueError(f"Unknown selector type: {args.selector_type}")
+    match args.selector_type:
+        case "random":
+            selector = RandomSelectorSimple()
+        case "variquery":
+            # Initialize VARIQuery selector
+            selector = VARIQuerySelector(
+                writer=writer,
+                reward_ensemble=reward_ensemble,
+                fragment_length=args.fragment_length,
+                vae_latent_dim=args.variquery_vae_latent_dim,
+                vae_hidden_dims=args.variquery_vae_hidden_dims,
+                vae_lr=args.variquery_vae_lr,
+                vae_weight_decay=args.variquery_vae_weight_decay,
+                vae_dropout=args.variquery_vae_dropout,
+                vae_batch_size=args.variquery_vae_batch_size,
+                vae_num_epochs=args.variquery_vae_num_epochs,
+                device=device,
+            )
+        case "duo":
+            selector = DUOSelector(
+                writer=writer,
+                preference_model=preference_model,
+                consensual_filter=args.duo_consensual_filter,
+                oversampling_factor=args.oversampling_factor,
+                random_state=args.seed,
+            )
+        case _:
+            raise ValueError(f"Unknown selector type: {args.selector_type}")
 
     # Agent setup
     agent = Agent(envs).to(device)
