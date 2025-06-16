@@ -76,9 +76,6 @@ class VARIQuerySelector(Selector):
         # Step 5: Rank by uncertainty estimate
         ranked_pair_indices = self._rank_pairs(th.tensor(first_indices), th.tensor(second_indices), batch)
 
-        print("Ranked pair indices:", ranked_pair_indices)
-        print("Ranked pair indices shape:", ranked_pair_indices.shape)
-
         top_indices = ranked_pair_indices[:num_pairs]   
         top_first_indices = first_indices[top_indices]
         top_second_indices = second_indices[top_indices]
@@ -121,9 +118,8 @@ class VARIQuerySelector(Selector):
         cluster_labels = kmeans.fit_predict(latent_states)
         
         # Calculate silhouette score to evaluate clustering quality
-        if len(latent_states) > 1:
-            score = silhouette_score(latent_states, cluster_labels)
-            print(f"Clustering silhouette score: {score:.3f}")
+        # if len(latent_states) > 1:
+        #     score = silhouette_score(latent_states, cluster_labels)
         
         # Group indices by cluster
         clusters = [[] for _ in range(num_clusters)]
@@ -138,13 +134,12 @@ class VARIQuerySelector(Selector):
         for _ in range(num_pairs):
             # Sample two random indices from the clusters
             c1, c2 = np.random.choice(len(clusters), size=2, replace=False)
-            print("sampled clusters: {} {}".format(c1, c2))
             idx1 = np.random.choice(len(clusters[c1]), replace=False)
             idx2 = np.random.choice(len(clusters[c2]), replace=False)
-            print("sampled indices: {} {}".format(idx1, idx2))
+
             index1 = clusters[c1][idx1]
             index2 = clusters[c2][idx2]
-            print("sampled final indices: {} {}".format(index1, index2))
+
             first_indices.append(index1)
             second_indices.append(index2)
 
@@ -154,16 +149,12 @@ class VARIQuerySelector(Selector):
         with th.no_grad():
             rewards = self.reward_ensemble(batch.obs, batch.acts)
 
-        print("Rewards shape:", rewards.shape)
-
         uncertainties = estimate_uncertainties(
             rewards=rewards,
             first_indices=first_indices,
             second_indices=second_indices,
             method="return_diff"
         )
-
-        print("Uncertainties shape:", uncertainties.shape)
         
         # Sort indices based on uncertainty values in descending order
         sorted_indices = th.argsort(uncertainties, descending=True)

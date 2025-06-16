@@ -236,9 +236,6 @@ class AgentTrainer:
             acts = rollout_sample.actions.reshape((-1,) + self.envs.single_action_space.shape)
             reward_preds = self.reward_ensemble.mean_reward(obs, acts).unsqueeze(-1)
 
-            print("Reward predictions shape:", reward_preds.shape)
-            print("Ground truth rewards shape:", rollout_sample.ground_truth_rewards.shape)
-
             next_value = self.agent.get_value(self.next_obs).reshape(1, -1)
             advantages = th.zeros_like(reward_preds).to(self.device)
             lastgaelam = 0

@@ -97,27 +97,16 @@ class StateVAE(nn.Module):
             z: (batch_size, latent_dim)
         """
         # Flatten input: (batch_size, fragment_length * state_dim)
-        print("Input shape:", x.shape)
         B = x.shape[0]
         x = x.view(B, -1)  # Flatten to (batch_size, fragment_length * state_dim)
-
-        print("Flattened input shape:", x.shape)
-        print("Flat dim:", self.flat_dim)
 
         # Pass through encoder
         hidden = self.encoder(x)
 
-        print("Hidden representation shape:", hidden.shape)
-
         mu = self.fc_mu(hidden)
         log_var = self.fc_logvar(hidden)
 
-        print("Mu shape:", mu.shape)
-        print("Log variance shape:", log_var.shape)
-
         z = self.reparameterize(mu, log_var)
-
-        print("Sampled latent z shape:", z.shape)
 
         return z, mu, log_var
     
@@ -156,9 +145,6 @@ class StateVAE(nn.Module):
             mu: (batch_size, latent_dim)
             log_var: (batch_size, latent_dim)
         """
-        print("VAE forward pass:")
-        print("Input shape:", x.shape)
-
         z, mu, log_var = self.encode(x)
         x_hat = self.decode(z)
         return x_hat, mu, log_var
@@ -202,8 +188,6 @@ class VAETrainer:
 
             for batch in dataloader:
                 x = batch['obs'].to(self.device)
-
-                print("Batch before forward pass shape:", x.shape)
 
                 # Forward pass
                 x_hat, mu, log_var = self.vae(x)

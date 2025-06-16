@@ -49,11 +49,8 @@ class RewardNet(nn.Module):
         Returns:
             The rewards of shape (batch_size, fragment_size, 1).
         """
-        print("RewardNet forward pass:")
         x = self.net(th.cat([obs, act], dim=-1))
-        print("x shape:", x.shape)
         x = x.squeeze(-1)
-        print("x shape after squeeze:", x.shape)
         return x
 
 class RewardEnsemble(nn.Module):
@@ -95,9 +92,6 @@ class RewardEnsemble(nn.Module):
         Returns:
             The mean rewards of shape (batch_size, fragment_size).
         """
-        print("Computing mean reward across ensemble members.")
-        print(f"obs shape: {obs.shape}, act shape: {act.shape}")
-
         rewards = self.forward(obs, act)
         mean = rewards.mean(dim=-1).squeeze(-1)
 
@@ -139,19 +133,11 @@ class PreferenceModel(nn.Module):
             The probability distribution over preferences of shape (batch_size, ensemble_size, 2).
         """
         # sum over fragment_size
-        print("Computing preference probabilities:")
-        print("First rews shape:", first_rews.shape)
-        print("Second rews shape:", second_rews.shape)
-
         first_exp = first_rews.sum(dim=1)
         second_exp = second_rews.sum(dim=1)
 
-        print("First exp shape:", first_exp.shape)
-        print("Second exp shape:", second_exp.shape)
-
         probs = self.softmax(th.stack([first_exp, second_exp], dim=-1)) # shape (batch_size, ensemble_size, 2)
 
-        print("Probs shape:", probs.shape)
         return probs
         
     def loss(self, probs: th.Tensor, prefs: th.Tensor, eps: float = 1e-8) -> th.Tensor:
@@ -171,9 +157,6 @@ class PreferenceModel(nn.Module):
         -------
         Tensor (scalar): Mean loss across batch and ensemble members.
         """
-        print("Computing loss for preference model:")
-        print("Prefs shape:", prefs.shape)
-        print("Probs shape:", probs.shape)
         # Expand targets across the ensemble dimension → (B, E, 2)
         prefs_expanded = prefs.unsqueeze(1).expand_as(probs)
 
@@ -379,7 +362,5 @@ class RewardTrainer:
         self.writer.add_scalar("reward/train_loss", final_train_loss, global_step)
         self.writer.add_scalar("reward/val_loss", final_val_loss, global_step)
         self.writer.add_scalar("reward/accuracy", final_reward_accuracy, global_step)
-
-        print("Training complete.")
 
         return final_train_loss, final_val_loss, final_reward_accuracy
