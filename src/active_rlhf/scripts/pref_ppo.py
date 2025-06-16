@@ -3,9 +3,10 @@ import os
 import random
 import time
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Literal
 
 from active_rlhf.algorithms.pref_ppo import Agent, AgentTrainer
+from active_rlhf.algorithms.variquery.selector import VARIQuerySelector
 import gymnasium as gym
 import numpy as np
 import torch as th
@@ -16,6 +17,8 @@ from active_rlhf.data.buffers import ReplayBuffer, PreferenceBuffer, PreferenceB
 from active_rlhf.data.dataset import PreferenceDataset
 from active_rlhf.rewards.reward_nets import PreferenceModel, RewardEnsemble, RewardTrainer
 from active_rlhf.queries.selector import RandomSelector, RandomSelectorSimple
+from active_rlhf.algorithms.variquery.vae import StateVAE, VAETrainer
+from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 
 
 @dataclass
@@ -106,6 +109,30 @@ class Args:
     """the total number of queries to send to the teacher"""
     queries_per_session: int = 10
     """the number of queries to send to the teacher per session"""
+    selector_type: Literal["random", "variquery"] = "random"
+    """type of selector to use for query selection"""
+    oversampling_factor: float = 2.0
+    """the oversampling factor for the selector"""
+    fragment_length: int = 50
+    """length of the fragments"""
+
+    # VARIQuery specific arguments
+    variquery_vae_latent_dim: int = 32
+    """dimension of the VAE latent space"""
+    variquery_vae_hidden_dims: List[int] = field(default_factory=lambda: [128, 64, 32])
+    """hidden dimensions of the VAE encoder/decoder"""
+    variquery_vae_lr: float = 1e-3
+    """learning rate for the VAE"""
+    variquery_vae_weight_decay: float = 1e-4
+    """weight decay for the VAE"""
+    variquery_vae_batch_size: int = 32
+    """batch size for VAE training"""
+    variquery_vae_num_epochs: int = 25
+    """number of epochs to train the VAE"""
+    variquery_vae_dropout: float = 0.1
+    """dropout rate for the VAE"""
+    variquery_vae_kl_weight: float = 1.0
+    """weight of the KL loss term in VAE training"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -186,8 +213,6 @@ if __name__ == "__main__":
         capacity=int(args.total_queries * args.reward_net_val_split),
     )
 
-    # Initialize selector
-    selector = RandomSelectorSimple()
 
     with th.random.fork_rng(devices=[]):  # empty list=CPU only; pass your GPU devices if needed
         th.manual_seed(args.seed)
@@ -220,6 +245,27 @@ if __name__ == "__main__":
         raise NotImplementedError(f"Query schedule {args.query_schedule} is not implemented.")
 
     print(f"Query schedule: {query_schedule}")
+
+    # Initialize selector
+    if args.selector_type == "random":
+        selector = RandomSelectorSimple()
+    elif args.selector_type == "variquery":
+        # Initialize VARIQuery selector
+        selector = VARIQuerySelector(
+            writer=writer,
+            reward_ensemble=reward_ensemble,
+            fragment_length=args.fragment_length,
+            vae_latent_dim=args.variquery_vae_latent_dim,
+            vae_hidden_dims=args.variquery_vae_hidden_dims,
+            vae_lr=args.variquery_vae_lr,
+            vae_weight_decay=args.variquery_vae_weight_decay,
+            vae_dropout=args.variquery_vae_dropout,
+            vae_batch_size=args.variquery_vae_batch_size,
+            vae_num_epochs=args.variquery_vae_num_epochs,
+            device=device,
+        )
+    else:
+        raise ValueError(f"Unknown selector type: {args.selector_type}")
 
     # Agent setup
     agent = Agent(envs).to(device)
@@ -269,12 +315,13 @@ if __name__ == "__main__":
         # Train reward network if next step is in query schedule. Be careful as we might overstep the query schedule.
         if next_query_step < len(query_schedule) and global_step >= query_schedule[next_query_step]:
             # Sample from replay buffer to get trajectory pairs
-            num_pairs = args.queries_per_session if next_query_step is not 0 else 32
-            reward_samples = replay_buffer.sample(num_pairs*2)
+            num_pairs = args.queries_per_session if next_query_step != 0 else 32
+            reward_samples = replay_buffer.sample(int(num_pairs*args.oversampling_factor))
 
             # Use selector to get trajectory pairs
-            trajectory_pairs = selector.select_pairs(reward_samples, num_pairs=num_pairs)
-            
+            trajectory_pairs = selector.select_pairs(reward_samples, num_pairs=num_pairs, global_step=global_step)
+            assert len(trajectory_pairs) == num_pairs
+
             # Calculate preferences based on returns
             first_returns = trajectory_pairs.first_rews.squeeze().sum(dim=-1)
             second_returns = trajectory_pairs.second_rews.squeeze().sum(dim=-1)

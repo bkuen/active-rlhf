@@ -31,6 +31,10 @@ class TrajectoryPairBatch:
     second_rews: th.Tensor
     second_dones: th.Tensor
 
+    def __len__(self) -> int:
+        """Return the number of pairs in the batch."""
+        return self.first_obs.shape[0]
+
 @dataclass
 class PreferenceBufferBatch(TrajectoryPairBatch):
     prefs: th.Tensor

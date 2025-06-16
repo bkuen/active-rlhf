@@ -6,12 +6,13 @@ class Selector(ABC):
     """Abstract base class for trajectory pair selection strategies."""
     
     @abstractmethod
-    def select_pairs(self, batch: ReplayBufferBatch, num_pairs: int) -> TrajectoryPairBatch:
+    def select_pairs(self, batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
         """Select pairs of trajectories from a batch.
         
         Args:
             batch: Batch of trajectories to select pairs from
             num_pairs: Number of pairs to select
+            global_step: Current training step for logging or other purposes
             
         Returns:
             TrajectoryPairBatch containing the selected pairs
@@ -21,12 +22,13 @@ class Selector(ABC):
 class RandomSelector(Selector):
     """Randomly selects pairs of trajectories from a batch."""
     
-    def select_pairs(self, batch: ReplayBufferBatch, num_pairs: int) -> TrajectoryPairBatch:
+    def select_pairs(self, batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
         """Randomly select pairs of trajectories from a batch.
         
         Args:
             batch: Batch of trajectories to select pairs from
             num_pairs: Number of pairs to select
+            global_step: Current training step for logging or other purposes
             
         Returns:
             TrajectoryPairBatch containing randomly selected pairs
@@ -56,11 +58,13 @@ class RandomSelector(Selector):
 class RandomSelectorSimple(Selector):
     """Randomly selects pairs of trajectories from a batch."""
 
-    def select_pairs(self, batch: ReplayBufferBatch, num_pairs: int) -> TrajectoryPairBatch:
+    def select_pairs(self, batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
         """Randomly select pairs of trajectories from a batch.
 
         Args:
             batch: Batch of trajectories to select pairs from
+            num_pairs: Number of pairs to select
+            global_step: Current training step for logging or other purposes
 
         Returns:
             TrajectoryPairBatch containing randomly selected pairs
