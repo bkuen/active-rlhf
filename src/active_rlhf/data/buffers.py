@@ -162,7 +162,7 @@ class RolloutBuffer:
             values=self.values.reshape(-1),
         )
 
-class PreferenceBuffer:
+class PreferenceBuffer(th.utils.data.Dataset):
     def __init__(self, capacity: int = 1000):
         """Initialize the preference buffer.
         
@@ -217,34 +217,26 @@ class PreferenceBuffer:
                 self.prefs[self.pos] = batch.prefs[i]
                 self.pos = (self.pos + 1) % self.capacity
 
-    def sample(self, batch_size: int) -> PreferenceBufferBatch:
-        """Sample a batch of preference pairs from the buffer.
-        
-        Args:
-            batch_size: Number of preference pairs to sample.
-            
-        Returns:
-            PreferenceBufferSample containing the sampled preference pairs.
-            If there are not enough samples, returns all available samples.
-        """
-        if self.size == 0:
-            raise ValueError("No samples in buffer yet")
-            
-        # If we don't have enough samples, use all available samples
-        actual_batch_size = min(batch_size, self.size)
-        indices = th.randint(0, self.size, (actual_batch_size,))
-        
-        return PreferenceBufferBatch(
-            first_obs=th.stack([self.first_obs[i] for i in indices]),
-            first_acts=th.stack([self.first_acts[i] for i in indices]),
-            first_rews=th.stack([self.first_rews[i] for i in indices]),
-            first_dones=th.stack([self.first_dones[i] for i in indices]),
-            second_obs=th.stack([self.second_obs[i] for i in indices]),
-            second_acts=th.stack([self.second_acts[i] for i in indices]),
-            second_rews=th.stack([self.second_rews[i] for i in indices]),
-            second_dones=th.stack([self.second_dones[i] for i in indices]),
-            prefs=th.stack([self.prefs[i] for i in indices])
-        )
-
     def __len__(self) -> int:
         return self.size
+
+    def __getitem__(self, idx: int) -> PreferenceBufferBatch:
+        """Get a single preference pair from the buffer.
+        
+        Args:
+            idx: Index of the preference pair to get.
+            
+        Returns:
+            PreferenceBufferBatch containing the preference pair.
+        """
+        return PreferenceBufferBatch(
+            first_obs=self.first_obs[idx],
+            first_acts=self.first_acts[idx],
+            first_rews=self.first_rews[idx],
+            first_dones=self.first_dones[idx],
+            second_obs=self.second_obs[idx],
+            second_acts=self.second_acts[idx],
+            second_rews=self.second_rews[idx],
+            second_dones=self.second_dones[idx],
+            prefs=self.prefs[idx]
+        )

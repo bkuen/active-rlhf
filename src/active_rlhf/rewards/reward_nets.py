@@ -8,7 +8,7 @@ from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 
 from active_rlhf.data import dataset
-from active_rlhf.data.buffers import PreferenceBuffer
+from active_rlhf.data.buffers import PreferenceBuffer, PreferenceBufferBatch
 from active_rlhf.data.dataset import make_dataloader
 
 
@@ -182,7 +182,7 @@ class PreferenceModel(nn.Module):
         per_member_ce = -(prefs_expanded * log_probs).sum(dim=-1)  # (B, E)
 
         # First average over ensemble, then over batch
-        return per_member_ce.mean()
+        return per_member_ce.mean().squeeze()
 
 class RewardTrainer:
     def __init__(self, 
@@ -193,11 +193,15 @@ class RewardTrainer:
                  weight_decay: float = 0.0,
                  batch_size: int = 32,
                  minibatch_size: Optional[int] = None,
-                 val_split: float = 0.2,  # Add validation split parameter
+                 val_split: float = 0.2,
                  ):
         self.preference_model = preference_model
         self.writer = writer
-        self.optimizer = th.optim.Adam(self.preference_model.ensemble.parameters(), lr=lr, weight_decay=weight_decay)
+        # Create separate optimizers for each ensemble member
+        self.optimizers = [
+            th.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
+            for net in self.preference_model.ensemble.nets
+        ]
         self.epochs = epochs
         self.batch_size = batch_size
         self.minibatch_size = minibatch_size or batch_size
@@ -247,6 +251,28 @@ class RewardTrainer:
 
         return accuracy
 
+    def _make_dataloader(self, buffer: PreferenceBuffer) -> th_data.DataLoader:
+        def collate_fn(batch):
+            # batch is a list of PreferenceBufferBatch objects
+            return PreferenceBufferBatch(
+                first_obs=th.stack([b.first_obs for b in batch]),
+                first_acts=th.stack([b.first_acts for b in batch]),
+                first_rews=th.stack([b.first_rews for b in batch]),
+                first_dones=th.stack([b.first_dones for b in batch]),
+                second_obs=th.stack([b.second_obs for b in batch]),
+                second_acts=th.stack([b.second_acts for b in batch]),
+                second_rews=th.stack([b.second_rews for b in batch]),
+                second_dones=th.stack([b.second_dones for b in batch]),
+                prefs=th.stack([b.prefs for b in batch])
+            )
+        
+        return th_data.DataLoader(
+            buffer,
+            batch_size=self.batch_size,
+            shuffle=True,
+            collate_fn=collate_fn
+        )
+
     def train(self, train_buffer: PreferenceBuffer, val_buffer: PreferenceBuffer, global_step: int):
         """Train the reward network using batches sampled from the training buffer and validated on the validation buffer.
         
@@ -259,74 +285,87 @@ class RewardTrainer:
         total_val_loss = 0.0
         total_reward_accuracy = 0.0
         
+        # Create dataloaders for training and validation
+        train_loader = self._make_dataloader(train_buffer)
+        val_loader = self._make_dataloader(val_buffer)
+        
         for epoch in tqdm(range(1, self.epochs+1), desc="Training Reward Model"):
             # Training phase
             self.preference_model.train()
             epoch_train_loss = 0.0
+            num_train_batches = 0
             
-            try:
-                # Sample a single batch for the entire epoch
-                batch = train_buffer.sample(self.batch_size)
-                
-                # Forward pass
-                first_rews, second_rews, probs = self.preference_model(
-                    first_obs=batch.first_obs,
-                    first_acts=batch.first_acts,
-                    second_obs=batch.second_obs,
-                    second_acts=batch.second_acts,
-                )
+            for batch in train_loader:
+                try:
+                    # Forward pass for each ensemble member separately
+                    total_loss = 0.0
+                    for i, net in enumerate(self.preference_model.ensemble.nets):
+                        # Get predictions for this member
+                        first_rews = net(batch.first_obs, batch.first_acts)
+                        second_rews = net(batch.second_obs, batch.second_acts)
+                        
+                        # Compute preference probabilities for this member
+                        first_exp = first_rews.sum(dim=1)
+                        second_exp = second_rews.sum(dim=1)
+                        probs = self.preference_model.softmax(th.stack([first_exp, second_exp], dim=-1))
+                        
+                        # Compute loss for this member
+                        member_loss = self.preference_model.loss(probs.unsqueeze(1), batch.prefs)
+                        total_loss += member_loss
+                        
+                        # Backward pass for this member
+                        self.optimizers[i].zero_grad()
+                        member_loss.backward()
+                        nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
+                        self.optimizers[i].step()
+                    
+                    epoch_train_loss += total_loss.item()
+                    num_train_batches += 1
+                    
+                except ValueError as e:
+                    print(f"Warning: {e}. Skipping this training batch.")
+                    os.exit(1)  # Exit if a ValueError occurs, as it indicates a critical issue with the batch data.
+                    continue
 
-                # Compute loss
-                loss = self.preference_model.loss(probs, batch.prefs)
-                epoch_train_loss = loss.item()
-
-                # Backward pass
-                self.optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.preference_model.ensemble.parameters(), max_norm=1.0)
-                self.optimizer.step()
-            except ValueError as e:
-                print(f"Warning: {e}. Skipping this training epoch.")
-                continue
+            epoch_train_loss /= num_train_batches if num_train_batches > 0 else 1
 
             # Validation phase
             self.preference_model.eval()
             epoch_val_loss = 0.0
             epoch_reward_accuracy = 0.0
+            num_val_batches = 0
             
             with th.no_grad():
-                try:
-                    # Sample a single batch for validation
-                    batch = val_buffer.sample(self.batch_size)
-                    
-                    # Forward pass
-                    first_rews, second_rews, probs = self.preference_model(
-                        first_obs=batch.first_obs,
-                        first_acts=batch.first_acts,
-                        second_obs=batch.second_obs,
-                        second_acts=batch.second_acts,
-                    )
+                for batch in val_loader:
+                    try:
+                        # Forward pass
+                        first_rews, second_rews, probs = self.preference_model(
+                            first_obs=batch.first_obs,
+                            first_acts=batch.first_acts,
+                            second_obs=batch.second_obs,
+                            second_acts=batch.second_acts,
+                        )
 
-                    # Compute validation loss
-                    val_loss = self.preference_model.loss(probs, batch.prefs)
-                    epoch_val_loss = val_loss.item()
+                        # Compute validation loss
+                        val_loss = self.preference_model.loss(probs, batch.prefs)
+                        epoch_val_loss += val_loss.item()
 
-                    # Calculate reward accuracy
-                    reward_accuracy = self._calculate_reward_accuracy(first_rews, second_rews, batch)
-                    epoch_reward_accuracy = reward_accuracy
-                except ValueError as e:
-                    print(f"Warning: {e}. Skipping this validation epoch.")
-                    continue
+                        # Calculate reward accuracy
+                        reward_accuracy = self._calculate_reward_accuracy(first_rews, second_rews, batch)
+                        epoch_reward_accuracy += reward_accuracy
+                        num_val_batches += 1
+                        
+                    except ValueError as e:
+                        print(f"Warning: {e}. Skipping this validation batch.")
+                        continue
+
+            epoch_val_loss /= num_val_batches if num_val_batches > 0 else 1
+            epoch_reward_accuracy /= num_val_batches if num_val_batches > 0 else 1
 
             # Update running totals
             total_train_loss += epoch_train_loss
             total_val_loss += epoch_val_loss
             total_reward_accuracy += epoch_reward_accuracy
-
-            # Log metrics to TensorBoard
-            self.writer.add_scalar("reward/train_loss", epoch_train_loss, global_step)
-            self.writer.add_scalar("reward/val_loss", epoch_val_loss, global_step)
-            self.writer.add_scalar("reward/accuracy", epoch_reward_accuracy, global_step)
 
             # Print metrics
             tqdm.write(f"Epoch {epoch}, Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f}, Reward Accuracy: {epoch_reward_accuracy:.4f}")
@@ -336,7 +375,11 @@ class RewardTrainer:
         final_val_loss = total_val_loss / self.epochs
         final_reward_accuracy = total_reward_accuracy / self.epochs
 
-        return final_train_loss, final_val_loss, final_reward_accuracy
+        # Log metrics to TensorBoard
+        self.writer.add_scalar("reward/train_loss", final_train_loss, global_step)
+        self.writer.add_scalar("reward/val_loss", final_val_loss, global_step)
+        self.writer.add_scalar("reward/accuracy", final_reward_accuracy, global_step)
 
-    def _make_dataloader(self, dataset: dataset.PreferenceDataset) -> th_data.DataLoader:
-        return th_data.DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+        print("Training complete.")
+
+        return final_train_loss, final_val_loss, final_reward_accuracy

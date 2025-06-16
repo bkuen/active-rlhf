@@ -384,6 +384,7 @@ if __name__ == "__main__":
                     reward_trainer.train(train_preference_buffer, val_preference_buffer, global_step)
                 except ValueError as e:
                     print(f"Warning: {e}. Skipping reward network training for this iteration.")
+                    os.exit(1)
 
             next_query_step += 1
 

@@ -39,8 +39,8 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --query-schedule="linear" \
   --total-queries=500 \
   --queries-per-session=10 \
-  --selector-type="variquery" \
-  --oversampling-factor=10.0 \
+  --selector-type="random" \
+  --oversampling-factor=2.0 \
   --fragment-length=50 \
   --variquery-vae-latent-dim=16 \
   --variquery-vae-lr=1e-3 \

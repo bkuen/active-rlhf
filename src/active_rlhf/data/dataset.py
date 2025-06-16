@@ -4,6 +4,9 @@ from typing import List, TypedDict
 import torch as th
 import torch.utils.data as th_data
 
+from active_rlhf.data.buffers import PreferenceBuffer
+
+
 @dataclass
 class PreferenceBatch:
     first_obs: th.Tensor
@@ -15,33 +18,18 @@ class PreferenceBatch:
     prefs: th.Tensor  # shape: (batch_size, 2) representing distribution over {1, 2}
 
 class PreferenceDataset(th.utils.data.Dataset):
-    def __init__(self, first_obs: th.Tensor, first_acts: th.Tensor, first_rews: th.Tensor, first_dones: th.Tensor, 
-                 second_obs: th.Tensor, second_acts: th.Tensor, second_rews: th.Tensor, second_dones: th.Tensor, 
-                 prefs: th.Tensor):
+    def __init__(self, buffer: PreferenceBuffer):
         """Initialize the PreferenceDataset.
         Args:
-            first_obs: Tensor of shape (N, obs_dim) for the first observations.
-            first_acts: Tensor of shape (N, act_dim) for the first actions.
-            first_rews: Tensor of shape (N, 1) for the first rewards.
-            first_dones: Tensor of shape (N, 1) for the first done flags.
-            second_obs: Tensor of shape (N, obs_dim) for the second observations.
-            second_acts: Tensor of shape (N, act_dim) for the second actions.
-            second_rews: Tensor of shape (N, 1) for the second rewards.
-            second_dones: Tensor of shape (N, 1) for the second done flags.
-            prefs: Tensor of shape (N, 2) representing distribution over {1, 2} where:
-                  - [1, 0] means first segment is preferred
-                  - [0, 1] means second segment is preferred
-                  - [0.5, 0.5] means segments are equally preferable
+            buffer (PreferenceBuffer): The preference buffer containing the data.
         """
-        self.first_obs = first_obs
-        self.first_acts = first_acts
-        self.first_rews = first_rews
-        self.first_dones = first_dones
-        self.second_obs = second_obs
-        self.second_acts = second_acts
-        self.second_rews = second_rews
-        self.second_dones = second_dones
-        self.prefs = prefs
+        self.first_obs = th.stack(buffer.first_obs, dim=0)
+        self.first_acts = th.stack(buffer.first_acts, dim=0)
+        self.first_rews = th.stack(buffer.first_rews, dim=0)
+        self.second_obs = th.stack(buffer.second_obs, dim=0)
+        self.second_acts = th.stack(buffer.second_acts, dim=0)
+        self.second_rews = th.stack(buffer.second_rews, dim=0)
+        self.prefs = th.stack(buffer.prefs, dim=0)
 
     def __len__(self):
         return len(self.prefs)
