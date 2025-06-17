@@ -65,16 +65,16 @@ class ReplayBuffer:
     rews: th.Tensor
     dones: th.Tensor
 
-    def __init__(self, envs: SyncVectorEnv, capacity: int = 500000, fragment_length: int = 50):
+    def __init__(self, envs: SyncVectorEnv, capacity: int = 500000, fragment_length: int = 50, device: str = "cuda" if th.cuda.is_available() else "cpu"):
         self.envs = envs
         self.capacity = capacity
         self.fragment_length = fragment_length
         self.size = 0
         self.pos = 0
-        self.obs = th.zeros((capacity, envs.single_observation_space.shape[0]))
-        self.acts = th.zeros((capacity, envs.single_action_space.shape[0]))
-        self.rews = th.zeros((capacity, 1))
-        self.dones = th.zeros((capacity, 1), dtype=th.bool)
+        self.obs = th.zeros((capacity, envs.single_observation_space.shape[0]), device=device)
+        self.acts = th.zeros((capacity, envs.single_action_space.shape[0]), device=device)
+        self.rews = th.zeros((capacity, 1), device=device)
+        self.dones = th.zeros((capacity, 1), dtype=th.bool, device=device)
 
     def add(self, obs: th.Tensor, act: th.Tensor, rew: th.Tensor, done: th.Tensor):
         """Add a new transition to the buffer.

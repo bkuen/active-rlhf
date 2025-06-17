@@ -9,7 +9,6 @@ from torch.utils.tensorboard import SummaryWriter
 
 from active_rlhf.data import dataset
 from active_rlhf.data.buffers import PreferenceBuffer, PreferenceBufferBatch
-from active_rlhf.data.dataset import make_dataloader
 
 
 class RewardNet(nn.Module):
@@ -18,11 +17,12 @@ class RewardNet(nn.Module):
                  act_dim: int,
                  hidden_dims: List[int] = [256, 256, 256],
                  dropout: float = 0.1,
-                 ):
+                 device: str = "cuda" if th.cuda.is_available() else "cpu"):
         super(RewardNet, self).__init__()
         self.obs_dim = obs_dim
         self.act_dim = act_dim
         self.hidden_dims = hidden_dims
+        self.device = device
 
         layers = []
         input_dim = obs_dim + act_dim
@@ -37,7 +37,7 @@ class RewardNet(nn.Module):
 
         layers.append(nn.Linear(hidden_dims[-1], 1))
 
-        self.net = nn.Sequential(*layers)
+        self.net = nn.Sequential(*layers).to(device)
 
     def forward(self, obs: th.Tensor, act: th.Tensor) -> th.Tensor:
         """Compute the reward for a given observation and action.
@@ -49,6 +49,8 @@ class RewardNet(nn.Module):
         Returns:
             The rewards of shape (batch_size, fragment_size, 1).
         """
+        obs = obs.to(self.device)
+        act = act.to(self.device)
         x = self.net(th.cat([obs, act], dim=-1))
         x = x.squeeze(-1)
         return x
@@ -60,15 +62,17 @@ class RewardEnsemble(nn.Module):
                  ensemble_size: int = 3,
                  hidden_dims: List[int] = [256, 256, 256],
                  dropout: float = 0.1,
-                 ):
+                 device: str = "cuda" if th.cuda.is_available() else "cpu"):
         super(RewardEnsemble, self).__init__()
+        self.device = device
 
         self.nets = nn.ModuleList([RewardNet(
             obs_dim=obs_dim,
             act_dim=act_dim,
             hidden_dims=hidden_dims,
-            dropout=dropout
-        ) for _ in range(ensemble_size)])
+            dropout=dropout,
+            device=device
+        ) for _ in range(ensemble_size)]).to(device)
 
     def forward(self, obs: th.Tensor, act: th.Tensor) -> th.Tensor:
         """Compute the rewards for a given observation and action.
@@ -98,10 +102,11 @@ class RewardEnsemble(nn.Module):
         return mean
     
 class PreferenceModel(nn.Module):
-    def __init__(self, ensemble: RewardEnsemble):
+    def __init__(self, ensemble: RewardEnsemble, device: str = "cuda" if th.cuda.is_available() else "cpu"):
         super(PreferenceModel, self).__init__()
         self.ensemble = ensemble
-        self.softmax = nn.Softmax(dim=-1)
+        self.softmax = nn.Softmax(dim=-1).to(device)
+        self.device = device
 
     def forward(self, first_obs: th.Tensor, first_acts: th.Tensor, second_obs: th.Tensor, second_acts: th.Tensor) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
         """Computes the probability distribution over preferences.
@@ -177,9 +182,10 @@ class RewardTrainer:
                  batch_size: int = 32,
                  minibatch_size: Optional[int] = None,
                  val_split: float = 0.2,
-                 ):
+                 device: str = "cuda" if th.cuda.is_available() else "cpu"):
         self.preference_model = preference_model
         self.writer = writer
+        self.device = device
         # Create separate optimizers for each ensemble member
         self.optimizers = [
             th.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
@@ -234,19 +240,19 @@ class RewardTrainer:
 
         return accuracy
 
-    def _make_dataloader(self, buffer: PreferenceBuffer) -> th_data.DataLoader:
+    def _make_dataloader(self, buffer: PreferenceBuffer, device: str = "cuda" if th.cuda.is_available() else "cpu") -> th_data.DataLoader:
         def collate_fn(batch):
             # batch is a list of PreferenceBufferBatch objects
             return PreferenceBufferBatch(
-                first_obs=th.stack([b.first_obs for b in batch]),
-                first_acts=th.stack([b.first_acts for b in batch]),
-                first_rews=th.stack([b.first_rews for b in batch]),
-                first_dones=th.stack([b.first_dones for b in batch]),
-                second_obs=th.stack([b.second_obs for b in batch]),
-                second_acts=th.stack([b.second_acts for b in batch]),
-                second_rews=th.stack([b.second_rews for b in batch]),
-                second_dones=th.stack([b.second_dones for b in batch]),
-                prefs=th.stack([b.prefs for b in batch])
+                first_obs=th.stack([b.first_obs for b in batch]).to(device),
+                first_acts=th.stack([b.first_acts for b in batch]).to(device),
+                first_rews=th.stack([b.first_rews for b in batch]).to(device),
+                first_dones=th.stack([b.first_dones for b in batch]).to(device),
+                second_obs=th.stack([b.second_obs for b in batch]).to(device),
+                second_acts=th.stack([b.second_acts for b in batch]).to(device),
+                second_rews=th.stack([b.second_rews for b in batch]).to(device),
+                second_dones=th.stack([b.second_dones for b in batch]).to(device),
+                prefs=th.stack([b.prefs for b in batch]).to(device),
             )
         
         return th_data.DataLoader(
@@ -269,8 +275,8 @@ class RewardTrainer:
         total_reward_accuracy = 0.0
         
         # Create dataloaders for training and validation
-        train_loader = self._make_dataloader(train_buffer)
-        val_loader = self._make_dataloader(val_buffer)
+        train_loader = self._make_dataloader(train_buffer, self.device)
+        val_loader = self._make_dataloader(val_buffer, self.device)
         
         for epoch in tqdm(range(1, self.epochs+1), desc="Training Reward Model"):
             # Training phase

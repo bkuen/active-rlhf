@@ -105,7 +105,7 @@ class DUOSelector(Selector):
     rewards_diff_np = rewards_diff.cpu().numpy()
 
     kmeans = KMeans(n_clusters=num_pairs, random_state=self.random_state, n_init=10, max_iter=300)
-    kmeans.fit(rewards_diff)
+    kmeans.fit(rewards_diff_np)
     labels = kmeans.labels_  # array [N]
     centers = kmeans.cluster_centers_  # array [k, D]
 

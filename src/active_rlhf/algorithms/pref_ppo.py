@@ -5,6 +5,7 @@ import torch.nn as nn
 from gymnasium.vector import SyncVectorEnv
 from torch.distributions.normal import Normal
 import numpy as np
+from tqdm import tqdm
 
 from active_rlhf.data.buffers import RolloutBuffer, RolloutBufferBatch
 from active_rlhf.rewards.reward_nets import RewardEnsemble
@@ -16,28 +17,31 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 class Agent(nn.Module):
-    def __init__(self, envs):
+    def __init__(self, envs, device: str = "cuda" if th.cuda.is_available() else "cpu"):
         super().__init__()
+        self.device = device
         self.critic = nn.Sequential(
             layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 1), std=1.0),
-        )
+        ).to(device)
         self.actor_mean = nn.Sequential(
             layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, np.prod(envs.single_action_space.shape)), std=0.01),
-        )
-        self.actor_logstd = nn.Parameter(th.zeros(1, np.prod(envs.single_action_space.shape)))
+        ).to(device)
+        self.actor_logstd = nn.Parameter(th.zeros(1, np.prod(envs.single_action_space.shape), device=device))
 
     def get_value(self, x):
+        x = x.to(self.device)
         return self.critic(x)
 
     def get_action_and_value(self, x, action=None):
+        x = x.to(self.device)
         action_mean = self.actor_mean(x)
         action_logstd = self.actor_logstd.expand_as(action_mean)
         action_std = th.exp(action_logstd)
@@ -132,12 +136,12 @@ class AgentTrainer:
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = self.envs.step(action.cpu().numpy())
             rollout_buffer.store(step=step, 
-                                 obs=self.next_obs,
-                                 done=self.next_done,
-                                 action=action, 
-                                 logprob=logprob, 
+                                 obs=self.next_obs.to(self.device),
+                                 done=self.next_done.to(self.device),
+                                 action=action.to(self.device),
+                                 logprob=logprob.to(self.device),
                                  ground_truth_reward=th.tensor(reward).to(self.device).view(-1),
-                                 value=value)
+                                 value=value.to(self.device))
 
             next_done = np.logical_or(terminations, truncations)
 
@@ -165,7 +169,7 @@ class AgentTrainer:
         # Optimizing the policy and value network
         b_inds = np.arange(self.batch_size)
         clipfracs = []
-        for epoch in range(self.update_epochs):
+        for epoch in tqdm(range(self.update_epochs), desc="Update agent policy"):
             np.random.shuffle(b_inds)
             for start in range(0, self.batch_size, self.minibatch_size):
                 end = start + self.minibatch_size

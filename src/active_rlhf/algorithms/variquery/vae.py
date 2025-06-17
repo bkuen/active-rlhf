@@ -41,7 +41,8 @@ class StateVAE(nn.Module):
                  latent_dim: int, 
                  fragment_length: int,
                  hidden_dims: List[int] = [128, 64, 32],
-                 dropout: float = 0.1):
+                 dropout: float = 0.1,
+                 device: str = "cuda" if th.cuda.is_available() else "cpu"):
         super().__init__()
         self.state_dim = state_dim
         self.flat_dim = fragment_length * state_dim
@@ -49,13 +50,14 @@ class StateVAE(nn.Module):
         self.fragment_length = fragment_length
         self.hidden_dims = hidden_dims
         self.dropout = dropout
+        self.device = device
 
-        self.encoder = self._create_encoder()
-        self.decoder = self._create_decoder()
+        self.encoder = self._create_encoder().to(self.device)
+        self.decoder = self._create_decoder().to(self.device)
 
         # Latent space projections
-        self.fc_mu = nn.Linear(hidden_dims[-1], latent_dim)
-        self.fc_logvar = nn.Linear(hidden_dims[-1], latent_dim)
+        self.fc_mu = nn.Linear(hidden_dims[-1], latent_dim).to(self.device)
+        self.fc_logvar = nn.Linear(hidden_dims[-1], latent_dim).to(self.device)
 
     def _create_encoder(self):
         encoder_layers = []
@@ -98,6 +100,7 @@ class StateVAE(nn.Module):
         """
         # Flatten input: (batch_size, fragment_length * state_dim)
         B = x.shape[0]
+        x = x.to(self.device)
         x = x.view(B, -1)  # Flatten to (batch_size, fragment_length * state_dim)
 
         # Pass through encoder
@@ -119,6 +122,7 @@ class StateVAE(nn.Module):
         Returns:
             x_hat: (batch_size, fragment_length, state_dim)
         """
+        z = z.to(self.device)
         x_hat = self.decoder(z)
 
         # Reshape to (batch_size, fragment_length, state_dim)
@@ -131,7 +135,7 @@ class StateVAE(nn.Module):
         Reparameterization trick to sample from the latent space.
         """
         std = th.exp(0.5 * log_var)
-        eps = th.randn_like(std)
+        eps = th.randn_like(std, device=self.device)
         return mu + eps * std
     
     def forward(self, x: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:

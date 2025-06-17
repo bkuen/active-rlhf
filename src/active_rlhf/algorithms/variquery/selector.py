@@ -74,11 +74,11 @@ class VARIQuerySelector(Selector):
         assert len(first_indices) == len(second_indices)
 
         # Step 5: Rank by uncertainty estimate
-        ranked_pair_indices = self._rank_pairs(th.tensor(first_indices), th.tensor(second_indices), batch)
+        ranked_pair_indices = self._rank_pairs(first_indices, second_indices, batch).to(self.device)
 
-        top_indices = ranked_pair_indices[:num_pairs]   
-        top_first_indices = first_indices[top_indices]
-        top_second_indices = second_indices[top_indices]
+        top_indices = ranked_pair_indices[:num_pairs].to(self.device)
+        top_first_indices = first_indices[top_indices].to(self.device)
+        top_second_indices = second_indices[top_indices].to(self.device)
 
         # Step 6: Visualize latent space and clusters
         self.visualizer.visualize(
@@ -143,7 +143,7 @@ class VARIQuerySelector(Selector):
             first_indices.append(index1)
             second_indices.append(index2)
 
-        return th.tensor(first_indices), th.tensor(second_indices)
+        return th.tensor(first_indices, device=self.device), th.tensor(second_indices, device=self.device)
     
     def _rank_pairs(self, first_indices: th.Tensor, second_indices: th.Tensor, batch: ReplayBufferBatch) -> th.Tensor:
         with th.no_grad():

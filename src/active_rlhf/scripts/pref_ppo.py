@@ -209,6 +209,7 @@ if __name__ == "__main__":
     replay_buffer = ReplayBuffer(
         capacity=args.replay_buffer_capacity,
         envs=envs,
+        device=device,
     )
     
     # Create separate buffers for training and validation
@@ -230,9 +231,13 @@ if __name__ == "__main__":
             hidden_dims=args.reward_net_hidden_dims,
             dropout=args.reward_net_dropout,
             ensemble_size=args.reward_net_ensemble_size,
+            device=device,
         )
 
-    preference_model = PreferenceModel(reward_ensemble)
+    preference_model = PreferenceModel(
+        ensemble=reward_ensemble,
+        device=device,
+    )
 
     reward_trainer = RewardTrainer(
         preference_model=preference_model,
@@ -242,6 +247,7 @@ if __name__ == "__main__":
         weight_decay=args.reward_net_weight_decay,
         batch_size=args.reward_net_batch_size,
         minibatch_size=args.reward_net_minibatch_size,
+        device=device,
     )
 
     if args.query_schedule == "linear":
@@ -360,7 +366,7 @@ if __name__ == "__main__":
                 [(first_returns > second_returns).float(),
                  (second_returns >= first_returns).float()],
                 dim=1,
-            )
+            ).to(device)
             
             # Create preference batch
             preference_batch = PreferenceBufferBatch(

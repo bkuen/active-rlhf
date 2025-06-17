@@ -45,16 +45,16 @@ class PreferenceDataset(th.utils.data.Dataset):
             prefs=self.prefs[idx],
         )
 
-def make_dataloader(dataset: PreferenceDataset, batch_size: int) -> th_data.DataLoader:
+def make_dataloader(dataset: PreferenceDataset, batch_size: int, device: str = "cuda" if th.cuda.is_available() else "cpu") -> th_data.DataLoader:
     def collate_fn(batch):
         # batch is a list of PreferenceBatch objects
         return PreferenceBatch(
-            first_obs=th.stack([b.first_obs for b in batch]),
-            first_acts=th.stack([b.first_acts for b in batch]),
-            first_rews=th.stack([b.first_rews for b in batch]),
-            second_obs=th.stack([b.second_obs for b in batch]),
-            second_acts=th.stack([b.second_acts for b in batch]),
-            second_rews=th.stack([b.second_rews for b in batch]),
+            first_obs=th.stack([b.first_obs for b in batch]).to(device),
+            first_acts=th.stack([b.first_acts for b in batch]).to(device),
+            first_rews=th.stack([b.first_rews for b in batch]).to(device),
+            second_obs=th.stack([b.second_obs for b in batch]).to(device),
+            second_acts=th.stack([b.second_acts for b in batch]).to(device),
+            second_rews=th.stack([b.second_rews for b in batch]).to(device),
             prefs=th.stack([b.prefs for b in batch])
         )
     
