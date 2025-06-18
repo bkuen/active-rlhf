@@ -21,6 +21,8 @@ class HybridSelector(Selector):
                  vae_dropout: float = 0.1,
                  vae_batch_size: int = 32,
                  vae_num_epochs: int = 25,
+                 gamma_z: float = 0.1,
+                 gamma_r: float = 0.1,
                  device: str = "cuda" if th.cuda.is_available() else "cpu"
                  ):
         self.reward_ensemble = reward_ensemble
@@ -33,6 +35,8 @@ class HybridSelector(Selector):
         self.vae_dropout = vae_dropout
         self.vae_batch_size = vae_batch_size
         self.vae_num_epochs = vae_num_epochs
+        self.gamma_z = gamma_z
+        self.gamma_r = gamma_r
         self.device = device
 
         self.random_selector = RandomSelector()
@@ -88,13 +92,12 @@ class HybridSelector(Selector):
         r_i = (r_i - r_i.mean(dim=0)) / (r_i.std(dim=0) + 1e-8)
         r_j = (r_j - r_j.mean(dim=0)) / (r_j.std(dim=0) + 1e-8)
 
-        gamma_z, gamma_r = 0.1, 0.1
         # Pairwise squared distances
         Z2 = th.cdist(z_i, z_j, p=2) ** 2 # (batch_size, batch_size)
         R2 = th.cdist(r_i, r_j, p=2) ** 2 # (batch_size, batch_size)
 
         # L-ensemble kernel
-        L = th.exp(-gamma_z * Z2 - gamma_r * R2)
+        L = th.exp(-self.gamma_z * Z2 - self.gamma_r * R2)
 
         # Greedy DPP selection
         selected = []

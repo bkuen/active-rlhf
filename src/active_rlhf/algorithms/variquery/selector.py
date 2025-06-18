@@ -43,6 +43,7 @@ class VARIQuerySelector(Selector):
         
 
     def select_pairs(self, batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
+        batch_size = batch.obs.shape[0]
         vae = StateVAE(
             state_dim=batch.obs.shape[2],
             latent_dim=self.vae_latent_dim,
@@ -70,7 +71,7 @@ class VARIQuerySelector(Selector):
         clusters = self._cluster_latent_space(latent_states=latent_states, num_clusters=num_pairs)
 
         # Step 4: Sample pairs
-        first_indices, second_indices = self._sample_random_pair_indices(clusters=clusters, num_pairs=num_pairs)
+        first_indices, second_indices = self._sample_random_pair_indices(clusters=clusters, num_pairs=batch_size//2)
         assert len(first_indices) == len(second_indices)
 
         # Step 5: Rank by uncertainty estimate

@@ -142,6 +142,12 @@ class Args:
     duo_consensual_filter: bool = False
     """whether to use the consensual filter"""
 
+    # Hybrid specific arguments
+    hybrid_dpp_gamma_z: float = 0.1
+    """the gamma_z parameter for the DPP in the hybrid selector"""
+    hybrid_dpp_gamma_r: float = 0.1
+    """the gamma_r parameter for the DPP in the hybrid selector"""
+
     # to be filled in runtime
     batch_size: int = 0
     """the batch size (computed in runtime)"""
@@ -153,11 +159,26 @@ class Args:
 
 def make_env(env_id, idx, capture_video, run_name, gamma):
     def thunk():
+        is_env_with_unhealthy_termination = (
+            env_id.startswith("Ant")
+            or env_id.startswith("Hopper")
+            or env_id.startswith("Walker2D")
+            or env_id.startswith("Walker2d")
+            or env_id.startswith("Humanoid")
+            or env_id.startswith("InvertedDoublePendulum")
+            or env_id.startswith("InvertedPendulum")
+        )
+
+        env_args = {}
+        if is_env_with_unhealthy_termination:
+            print("Setting `terminate_when_unhealthy` to False for environment:", env_id)
+            env_args['terminate_when_unhealthy'] = False
+
         if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array")
+            env = gym.make(env_id, render_mode="rgb_array", **env_args)
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
         else:
-            env = gym.make(env_id)
+            env = gym.make(env_id, **env_args)
         env = gym.wrappers.FlattenObservation(env)  # deal with dm_control's Dict observation space
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env = gym.wrappers.ClipAction(env)
@@ -264,7 +285,7 @@ if __name__ == "__main__":
     # Initialize selector
     match args.selector_type:
         case "random":
-            selector = RandomSelectorSimple()
+            selector = RandomSelector()
         case "variquery":
             # Initialize VARIQuery selector
             selector = VARIQuerySelector(
@@ -300,6 +321,8 @@ if __name__ == "__main__":
                 vae_dropout=args.variquery_vae_dropout,
                 vae_batch_size=args.variquery_vae_batch_size,
                 vae_num_epochs=args.variquery_vae_num_epochs,
+                gamma_z=args.hybrid_dpp_gamma_z,
+                gamma_r=args.hybrid_dpp_gamma_r,
                 device=device,
             )
         case _:
