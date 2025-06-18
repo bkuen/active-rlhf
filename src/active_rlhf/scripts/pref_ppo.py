@@ -39,6 +39,8 @@ class Args:
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
+    wandb_tags: List[str] = field(default_factory=lambda: [])
+    """the tags of this experiment"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     save_model: bool = False
@@ -184,6 +186,7 @@ if __name__ == "__main__":
             name=run_name,
             monitor_gym=True,
             save_code=True,
+            tags=args.wandb_tags,
         )
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(

@@ -6,6 +6,7 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --track=True \
   --wandb-project-name="active-rlhf-hybrid" \
   --wandb-entity="bkuen-ludwig-maximilianuniversity-of-munich" \
+  --wandb-tags "variquery" "second" \
   --capture-video=False \
   --save-model=True \
   --upload-model=False \
@@ -39,7 +40,7 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --query-schedule="linear" \
   --total-queries=500 \
   --queries-per-session=10 \
-  --selector-type="hybrid" \
+  --selector-type="variquery" \
   --oversampling-factor=10.0 \
   --fragment-length=50 \
   --variquery-vae-latent-dim=16 \
