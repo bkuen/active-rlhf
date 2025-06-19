@@ -1,5 +1,6 @@
 from typing import List
 from active_rlhf.algorithms.variquery.vae import StateVAE, VAETrainer
+from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 from active_rlhf.data.buffers import ReplayBufferBatch, TrajectoryPairBatch
 import torch as th
 from torch.utils.tensorboard import SummaryWriter
@@ -23,8 +24,10 @@ class HybridSelector(Selector):
                  vae_num_epochs: int = 25,
                  gamma_z: float = 0.1,
                  gamma_r: float = 0.1,
+                 beta: float = 0.3, # balance between latent and reward similarity
                  device: str = "cuda" if th.cuda.is_available() else "cpu"
                  ):
+        self.writer = writer
         self.reward_ensemble = reward_ensemble
         self.fragment_length = fragment_length
         self.oversampling_factor = oversampling_factor
@@ -37,9 +40,11 @@ class HybridSelector(Selector):
         self.vae_num_epochs = vae_num_epochs
         self.gamma_z = gamma_z
         self.gamma_r = gamma_r
+        self.beta = beta  # balance between latent and reward similarity
         self.device = device
 
         self.random_selector = RandomSelector()
+        self.visualizer = VAEVisualizer(writer=writer)
 
     def select_pairs(self, batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
         """
@@ -92,12 +97,31 @@ class HybridSelector(Selector):
         r_i = (r_i - r_i.mean(dim=0)) / (r_i.std(dim=0) + 1e-8)
         r_j = (r_j - r_j.mean(dim=0)) / (r_j.std(dim=0) + 1e-8)
 
+        # do the heavy math in FP64
+        z_i, z_j = z_i.double(), z_j.double()
+        r_i, r_j = r_i.double(), r_j.double()
+
         # Pairwise squared distances
         Z2 = th.cdist(z_i, z_j, p=2) ** 2 # (batch_size, batch_size)
         R2 = th.cdist(r_i, r_j, p=2) ** 2 # (batch_size, batch_size)
 
+        gamma_z = HybridSelector.gamma_median(z_i)  # after z-scoring
+        gamma_r = HybridSelector.gamma_median(r_i)  # after z-scoring returns
+
+        self.writer.add_scalar("hybrid/gamma_z", gamma_z, global_step)
+        self.writer.add_scalar("hybrid/gamma_r", gamma_r, global_step)
+
+        # Compute the DPP kernel matrix
+        # Lz = th.exp(-gamma_z * Z2)
+        # Lr = th.exp(-gamma_r * R2)
+        # L = (1.0 - self.beta) * Lz + self.beta * Lr
+
         # L-ensemble kernel
         L = th.exp(-self.gamma_z * Z2 - self.gamma_r * R2)
+
+        # add tiny, scale-aware jitter for numerical PSD safety
+        # diag_mean = L.diagonal().mean()
+        # L += 1e-8 * diag_mean  * th.eye(batch_size, device=L.device, dtype=L.dtype)
 
         # Greedy DPP selection
         selected = []
@@ -115,8 +139,22 @@ class HybridSelector(Selector):
             selected.append(best_idx)
             remaining.remove(best_idx)
 
+        # If DPP quit early, top up with random leftovers
+        if len(selected) < num_pairs and remaining:
+            print(f"Warning: DPP selection did not fill all pairs, topping up with {num_pairs - len(selected)} random selections.")
+            self.writer.add_scalar("hybrid/num_additional_pairs", num_pairs - len(selected), global_step)
+            additional = th.randperm(len(remaining))[:num_pairs - len(selected)]
+            selected.extend([list(remaining)[i] for i in additional])
+        else:
+            self.writer.add_scalar("hybrid/num_additional_pairs", 0, global_step)
+
         return candidate_pairs[selected]
 
-        
+    @staticmethod
+    def gamma_median(features: th.Tensor) -> float:
+        with th.no_grad():
+            d2 = th.pdist(features, p=2).pow(2)  # (N·(N-1)/2,)
+            median_d2 = th.quantile(d2, 0.5)
+            return 1.0 / (median_d2 + 1e-12)  # guard div-by-zero
 
         

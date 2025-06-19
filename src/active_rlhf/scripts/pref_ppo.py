@@ -7,6 +7,7 @@ from typing import List, Literal
 
 from active_rlhf.algorithms.duo.selector import DUOSelector
 from active_rlhf.algorithms.hybrid.selector import HybridSelector
+from active_rlhf.algorithms.hybrid2.selector import HybridV2Selector
 from active_rlhf.algorithms.pref_ppo import Agent, AgentTrainer
 from active_rlhf.algorithms.variquery.selector import VARIQuerySelector
 import gymnasium as gym
@@ -113,7 +114,7 @@ class Args:
     """the total number of queries to send to the teacher"""
     queries_per_session: int = 10
     """the number of queries to send to the teacher per session"""
-    selector_type: Literal["random", "variquery", "duo", "hybrid"] = "random"
+    selector_type: Literal["random", "variquery", "duo", "hybrid", "hybrid2"] = "random"
     """type of selector to use for query selection"""
     oversampling_factor: float = 2.0
     """the oversampling factor for the selector"""
@@ -147,6 +148,8 @@ class Args:
     """the gamma_z parameter for the DPP in the hybrid selector"""
     hybrid_dpp_gamma_r: float = 0.1
     """the gamma_r parameter for the DPP in the hybrid selector"""
+    hybrid_dpp_beta: float = 0.3
+    """the beta parameter for the DPP in the hybrid selector, balancing latent and reward similarity"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -323,6 +326,22 @@ if __name__ == "__main__":
                 vae_num_epochs=args.variquery_vae_num_epochs,
                 gamma_z=args.hybrid_dpp_gamma_z,
                 gamma_r=args.hybrid_dpp_gamma_r,
+                beta=args.hybrid_dpp_beta,
+                device=device,
+            )
+        case "hybrid2":
+            selector = HybridV2Selector(
+                writer=writer,
+                preference_model=preference_model,
+                fragment_length=args.fragment_length,
+                vae_latent_dim=args.variquery_vae_latent_dim,
+                vae_hidden_dims=args.variquery_vae_hidden_dims,
+                vae_lr=args.variquery_vae_lr,
+                vae_weight_decay=args.variquery_vae_weight_decay,
+                vae_dropout=args.variquery_vae_dropout,
+                vae_batch_size=args.variquery_vae_batch_size,
+                vae_num_epochs=args.variquery_vae_num_epochs,
+                oversampling_factor=args.oversampling_factor,
                 device=device,
             )
         case _:
