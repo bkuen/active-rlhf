@@ -96,7 +96,7 @@ class HybridV2Selector(Selector):
         rewards_diff = first_rews_mean - second_rews_mean  # shape: (num_pairs, fragment_length)
         rewards_diff = (rewards_diff - rewards_diff.mean(dim=0)) / (rewards_diff.std(dim=0) + 1e-8)
 
-        embedding = th.cat([first_latents, second_latents, rewards_diff], dim=1)
+        embedding = th.cat([first_latents, second_latents, rewards_diff], dim=1).to(self.device)
 
         # Select the most representative pairs
         selected_indices = self._select_from_clusters(embedding=embedding, num_pairs=num_pairs)
@@ -127,7 +127,7 @@ class HybridV2Selector(Selector):
             if not np.any(member_mask):
                 continue
 
-            members = embedding[member_mask]  # [M, D]
+            members = embedding_np[member_mask]  # [M, D]
             center = centers[cluster_id]  # [D]
             # compute Euclidean distances from center
             dists = np.linalg.norm(members - center, axis=1)  # [M]
@@ -136,7 +136,7 @@ class HybridV2Selector(Selector):
             closest_member = member_indices[np.argmin(dists)]
             selected_indices.append(int(closest_member))
 
-        return th.tensor(selected_indices)
+        return th.tensor(selected_indices, device=self.device)
 
     def _sample_random_pair_indices(self, clusters: List[List[int]], num_pairs: int) -> Tuple[th.Tensor, th.Tensor]:
         first_indices = []
