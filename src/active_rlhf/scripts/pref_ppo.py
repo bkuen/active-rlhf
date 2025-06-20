@@ -18,6 +18,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from active_rlhf.data.buffers import ReplayBuffer, PreferenceBuffer, PreferenceBufferBatch
 from active_rlhf.data.dataset import PreferenceDataset
+from active_rlhf.data.running_stats import RunningStat
 from active_rlhf.rewards.reward_nets import PreferenceModel, RewardEnsemble, RewardTrainer
 from active_rlhf.queries.selector import RandomSelector, RandomSelectorSimple
 from active_rlhf.algorithms.variquery.vae import StateVAE, VAETrainer
@@ -260,6 +261,8 @@ if __name__ == "__main__":
             ensemble_size=args.reward_net_ensemble_size,
             device=device,
         )
+        reward_ensemble.eval()
+        reward_norm = RunningStat(device=device)
 
     preference_model = PreferenceModel(
         ensemble=reward_ensemble,
@@ -352,6 +355,7 @@ if __name__ == "__main__":
     agent_trainer = AgentTrainer(
         agent=agent,
         reward_ensemble=reward_ensemble,
+        reward_norm=reward_norm,
         envs=envs,
         device=device,
         lr=args.learning_rate,

@@ -281,6 +281,7 @@ class RewardTrainer:
         for epoch in tqdm(range(1, self.epochs+1), desc="Training Reward Model"):
             # Training phase
             self.preference_model.train()
+            self.preference_model.ensemble.train()
             epoch_train_loss = 0.0
             num_train_batches = 0
             
@@ -320,6 +321,7 @@ class RewardTrainer:
 
             # Validation phase
             self.preference_model.eval()
+            self.preference_model.ensemble.eval()
             epoch_val_loss = 0.0
             epoch_reward_accuracy = 0.0
             num_val_batches = 0

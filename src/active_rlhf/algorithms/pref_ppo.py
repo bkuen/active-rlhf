@@ -8,6 +8,7 @@ import numpy as np
 from tqdm import tqdm
 
 from active_rlhf.data.buffers import RolloutBuffer, RolloutBufferBatch
+from active_rlhf.data.running_stats import RunningStat
 from active_rlhf.rewards.reward_nets import RewardEnsemble
 
 
@@ -70,6 +71,7 @@ class AgentTrainer:
     def __init__(self, 
                  agent: Agent,
                  reward_ensemble: RewardEnsemble,
+                 reward_norm: RunningStat,
                  envs: SyncVectorEnv, 
                  device: str, 
                  lr: float, 
@@ -91,6 +93,7 @@ class AgentTrainer:
                  seed: int):
         self.agent = agent
         self.reward_ensemble = reward_ensemble
+        self.reward_norm = reward_norm
         self.envs = envs
         self.device = device
         self.lr = lr
@@ -238,10 +241,14 @@ class AgentTrainer:
         with th.no_grad():
             obs = rollout_sample.obs.reshape((-1,) + self.envs.single_observation_space.shape)
             acts = rollout_sample.actions.reshape((-1,) + self.envs.single_action_space.shape)
-            reward_preds = self.reward_ensemble.mean_reward(obs, acts).unsqueeze(-1)
+            raw_rewards = self.reward_ensemble.mean_reward(obs, acts).unsqueeze(-1)
+            self.reward_norm.update(raw_rewards)
+            rewards = self.reward_norm.normalize(raw_rewards)
+            rewards = rewards.clamp(-5, 5)
+
 
             next_value = self.agent.get_value(self.next_obs).reshape(1, -1)
-            advantages = th.zeros_like(reward_preds).to(self.device)
+            advantages = th.zeros_like(rewards).to(self.device)
             lastgaelam = 0
             for t in reversed(range(num_steps)):
                 if t == num_steps - 1:
@@ -250,7 +257,7 @@ class AgentTrainer:
                 else:
                     nextnonterminal = 1.0 - rollout_sample.dones[t + 1]
                     nextvalues = rollout_sample.values[t + 1]
-                delta = reward_preds[t] + self.gamma * nextvalues * nextnonterminal - rollout_sample.values[t]
+                delta = rewards[t] + self.gamma * nextvalues * nextnonterminal - rollout_sample.values[t]
                 advantages[t] = lastgaelam = delta + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam
             returns = advantages + rollout_sample.values
 
