@@ -296,6 +296,7 @@ if __name__ == "__main__":
             # Initialize VARIQuery selector
             selector = VARIQuerySelector(
                 writer=writer,
+                reward_norm=reward_norm,
                 reward_ensemble=reward_ensemble,
                 fragment_length=args.fragment_length,
                 vae_latent_dim=args.variquery_vae_latent_dim,
@@ -353,6 +354,7 @@ if __name__ == "__main__":
     # Agent setup
     agent = Agent(envs).to(device)
     agent_trainer = AgentTrainer(
+        writer=writer,
         agent=agent,
         reward_ensemble=reward_ensemble,
         reward_norm=reward_norm,
@@ -391,10 +393,10 @@ if __name__ == "__main__":
         rollout_sample, episode_infos = agent_trainer.collect_rollout(global_step, args.num_steps)
         replay_buffer.add_rollout(rollout_sample)
 
-        global_step += args.num_envs * args.num_steps
-
         # Update policy
-        metrics = agent_trainer.update_policy(rollout_sample=rollout_sample, num_steps=args.num_steps)
+        metrics = agent_trainer.update_policy(rollout_sample=rollout_sample, num_steps=args.num_steps, global_step=global_step)
+
+        global_step += args.num_envs * args.num_steps
 
         # Train reward network if next step is in query schedule. Be careful as we might overstep the query schedule.
         if next_query_step < len(query_schedule) and global_step >= query_schedule[next_query_step]:

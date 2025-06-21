@@ -5,6 +5,7 @@ import torch.nn as nn
 from gymnasium.vector import SyncVectorEnv
 from torch.distributions.normal import Normal
 import numpy as np
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from active_rlhf.data.buffers import RolloutBuffer, RolloutBufferBatch
@@ -68,7 +69,8 @@ class RolloutEpisodeInfo:
     episode_length: int
 
 class AgentTrainer:
-    def __init__(self, 
+    def __init__(self,
+                 writer: SummaryWriter,
                  agent: Agent,
                  reward_ensemble: RewardEnsemble,
                  reward_norm: RunningStat,
@@ -91,6 +93,7 @@ class AgentTrainer:
                  max_grad_norm: float,
                  target_kl: float,
                  seed: int):
+        self.writer = writer
         self.agent = agent
         self.reward_ensemble = reward_ensemble
         self.reward_norm = reward_norm
@@ -159,8 +162,8 @@ class AgentTrainer:
 
         return rollout_buffer.get_batch(), episode_infos
 
-    def update_policy(self, rollout_sample: RolloutBufferBatch, num_steps: int):
-        advantages, returns = self._compute_gaes(rollout_sample, num_steps)
+    def update_policy(self, rollout_sample: RolloutBufferBatch, num_steps: int, global_step: int):
+        advantages, returns = self._compute_gaes(rollout_sample, num_steps, global_step)
 
         b_obs = rollout_sample.obs.reshape((-1,) + self.envs.single_observation_space.shape)
         b_logprobs = rollout_sample.logprobs.reshape(-1)
@@ -237,7 +240,7 @@ class AgentTrainer:
             explained_var=explained_var
         )
 
-    def _compute_gaes(self, rollout_sample: RolloutBufferBatch, num_steps: int):
+    def _compute_gaes(self, rollout_sample: RolloutBufferBatch, num_steps: int, global_step: int):
         with th.no_grad():
             obs = rollout_sample.obs.reshape((-1,) + self.envs.single_observation_space.shape)
             acts = rollout_sample.actions.reshape((-1,) + self.envs.single_action_space.shape)
@@ -246,6 +249,8 @@ class AgentTrainer:
             rewards = self.reward_norm.normalize(raw_rewards)
             rewards = rewards.clamp(-5, 5)
 
+            sat = (raw_rewards.abs() > self.reward_norm.std() * 5).float().mean()
+            self.writer.add_scalar("reward/agent_clamp_sat", sat, global_step)
 
             next_value = self.agent.get_value(self.next_obs).reshape(1, -1)
             advantages = th.zeros_like(rewards).to(self.device)

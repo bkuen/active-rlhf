@@ -3,6 +3,8 @@ from active_rlhf.algorithms.variquery.vae import StateVAE, VAETrainer
 from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
+
+from active_rlhf.data.running_stats import RunningStat
 from active_rlhf.queries.uncertainty import estimate_uncertainties
 from active_rlhf.rewards.reward_nets import RewardEnsemble
 import numpy as np
@@ -18,6 +20,7 @@ class VARIQuerySelector(Selector):
     def __init__(self,
                  writer: SummaryWriter,
                  reward_ensemble: RewardEnsemble,
+                 reward_norm: RunningStat,
                  fragment_length: int = 50,
                  vae_latent_dim: int = 16,
                  vae_hidden_dims: List[int] = [128, 64, 32],
@@ -29,6 +32,7 @@ class VARIQuerySelector(Selector):
                  device: str = "cuda" if th.cuda.is_available() else "cpu"
                  ):
         self.reward_ensemble = reward_ensemble
+        self.reward_norm = reward_norm
         self.fragment_length = fragment_length
         self.vae_latent_dim = vae_latent_dim
         self.vae_hidden_dims = vae_hidden_dims
@@ -149,9 +153,10 @@ class VARIQuerySelector(Selector):
     def _rank_pairs(self, first_indices: th.Tensor, second_indices: th.Tensor, batch: ReplayBufferBatch) -> th.Tensor:
         with th.no_grad():
             rewards = self.reward_ensemble(batch.obs, batch.acts)
+            rewards_norm = self.reward_norm(rewards)
 
         uncertainties = estimate_uncertainties(
-            rewards=rewards,
+            rewards=rewards_norm,
             first_indices=first_indices,
             second_indices=second_indices,
             method="return_diff"
