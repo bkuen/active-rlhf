@@ -247,10 +247,10 @@ class AgentTrainer:
             raw_rewards = self.reward_ensemble.mean_reward(obs, acts).unsqueeze(-1)
             self.reward_norm.update(raw_rewards)
             rewards = self.reward_norm.normalize(raw_rewards)
-            rewards = rewards.clamp(-5, 5)
+            rewards = 5 * th.tanh(rewards / 5)
 
-            sat = (raw_rewards.abs() > self.reward_norm.std() * 5).float().mean()
-            self.writer.add_scalar("reward/agent_clamp_sat", sat, global_step)
+            # sat = (raw_rewards.abs() > self.reward_norm.std() * 5).float().mean()
+            # self.writer.add_scalar("reward/agent_clamp_sat", sat, global_step)
 
             next_value = self.agent.get_value(self.next_obs).reshape(1, -1)
             advantages = th.zeros_like(rewards).to(self.device)
