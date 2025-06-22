@@ -117,6 +117,8 @@ class Args:
     """the number of queries to send to the teacher per session"""
     selector_type: Literal["random", "variquery", "duo", "hybrid", "hybrid2"] = "random"
     """type of selector to use for query selection"""
+    sampling_strategy: Literal["uniform", "priority"] = "uniform"
+    """the sampling strategy from the replay buffer for the selector"""
     oversampling_factor: float = 2.0
     """the oversampling factor for the selector"""
     fragment_length: int = 50
@@ -402,7 +404,15 @@ if __name__ == "__main__":
         if next_query_step < len(query_schedule) and global_step >= query_schedule[next_query_step]:
             # Sample from replay buffer to get trajectory pairs
             num_pairs = args.queries_per_session if next_query_step != 0 else 32
-            reward_samples = replay_buffer.sample(int(num_pairs*args.oversampling_factor))
+
+            if args.sampling_strategy == "uniform":
+                reward_samples = replay_buffer.sample(int(num_pairs*args.oversampling_factor))
+            elif args.sampling_strategy == "priority":
+                replay_buffer.update_on_policiness_scores(agent)
+                replay_buffer.log_trajectory_statistics(writer, global_step)
+                reward_samples = replay_buffer.sample_by_on_policiness(int(num_pairs*args.oversampling_factor), agent)
+            else:
+                raise ValueError(f"Unknown sampling strategy: {args.sampling_strategy}")
 
             # Use selector to get trajectory pairs
             trajectory_pairs = selector.select_pairs(reward_samples, num_pairs=num_pairs, global_step=global_step)

@@ -1,5 +1,5 @@
-from typing import TypedDict, Union, Sequence
-
+from typing import TypedDict, Union, Sequence, List, Optional
+import numpy as np
 import torch as th
 from gymnasium.vector import SyncVectorEnv
 from dataclasses import dataclass
@@ -59,6 +59,14 @@ class TrajectoryPairBatch:
 class PreferenceBufferBatch(TrajectoryPairBatch):
     prefs: th.Tensor
 
+@dataclass
+class TrajectoryInfo:
+    """Information about a trajectory stored in the replay buffer."""
+    start_pos: int
+    length: int
+    on_policiness_score: float
+    last_updated_step: int
+
 class ReplayBuffer:
     obs: th.Tensor
     acts: th.Tensor
@@ -75,6 +83,11 @@ class ReplayBuffer:
         self.acts = th.zeros((capacity, envs.single_action_space.shape[0]), device=device)
         self.rews = th.zeros((capacity, 1), device=device)
         self.dones = th.zeros((capacity, 1), dtype=th.bool, device=device)
+        
+        # Trajectory tracking
+        self.trajectories: List[TrajectoryInfo] = []
+        self.device = device
+        self.global_step = 0
 
     def add(self, obs: th.Tensor, act: th.Tensor, rew: th.Tensor, done: th.Tensor):
         """Add a new transition to the buffer.
@@ -90,6 +103,9 @@ class ReplayBuffer:
 
         rew = rew.unsqueeze(-1)  # Ensure rew is of shape (fragment_length,)
         done = done.unsqueeze(-1)  # Ensure done is of shape (fragment_length,)
+
+        # Clean up trajectories that will be overwritten
+        self._cleanup_overwritten_trajectories(start_idx, end_idx)
 
         if end_idx < self.capacity:
             self.obs[start_idx:end_idx] = obs[:]
@@ -109,8 +125,49 @@ class ReplayBuffer:
             self.rews[:overwrite_length] = rew[(fragment_length - overwrite_length):]
             self.dones[:overwrite_length] = done[(fragment_length - overwrite_length):]
 
+        # Add trajectory info
+        trajectory_info = TrajectoryInfo(
+            start_pos=start_idx,
+            length=fragment_length,
+            on_policiness_score=0.0,  # Will be updated later
+            last_updated_step=self.global_step
+        )
+        self.trajectories.append(trajectory_info)
+
         self.pos = (self.pos + fragment_length) % self.capacity
         self.size = min(self.size + fragment_length, self.capacity)
+        self.global_step += fragment_length
+
+    def _cleanup_overwritten_trajectories(self, start_idx: int, end_idx: int) -> None:
+        """Remove trajectories that will be overwritten by the new data."""
+        if end_idx <= self.capacity:
+            # Simple case: no wrapping
+            trajectories_to_remove = []
+            for trajectory in self.trajectories:
+                traj_start = trajectory.start_pos
+                traj_end = traj_start + trajectory.length
+                
+                # Check if trajectory overlaps with the new data
+                if (traj_start < end_idx and traj_end > start_idx):
+                    trajectories_to_remove.append(trajectory)
+        else:
+            # Wrapping case: new data spans from start_idx to end_idx (wrapped)
+            trajectories_to_remove = []
+            for trajectory in self.trajectories:
+                traj_start = trajectory.start_pos
+                traj_end = traj_start + trajectory.length
+                
+                # Check if trajectory overlaps with either part of the wrapped data
+                # Part 1: start_idx to capacity
+                if (traj_start < self.capacity and traj_end > start_idx):
+                    trajectories_to_remove.append(trajectory)
+                # Part 2: 0 to (end_idx - capacity)
+                elif (traj_start < (end_idx - self.capacity) and traj_end > 0):
+                    trajectories_to_remove.append(trajectory)
+        
+        # Remove the overlapping trajectories
+        for trajectory in trajectories_to_remove:
+            self.trajectories.remove(trajectory)
 
     def add_rollout(self, rollout: RolloutBufferBatch):
         obs = rollout.obs.reshape((-1,) + self.envs.single_observation_space.shape)
@@ -126,6 +183,149 @@ class ReplayBuffer:
             done=dones,  # Ensure done is of shape (fragment_length, 1)
         )
 
+    def update_on_policiness_scores(self, agent) -> None:
+        """Update on-policiness scores for all trajectories using the current agent.
+        
+        Args:
+            agent: The current agent to compute log probabilities with.
+        """
+        for trajectory in self.trajectories:
+            # Get trajectory data
+            start_pos = trajectory.start_pos
+            length = trajectory.length
+            
+            # Handle circular buffer wrapping
+            if start_pos + length <= self.capacity:
+                traj_obs = self.obs[start_pos:start_pos + length]
+                traj_acts = self.acts[start_pos:start_pos + length]
+            else:
+                # Handle wrapping case
+                first_part_length = self.capacity - start_pos
+                traj_obs = th.cat([
+                    self.obs[start_pos:],
+                    self.obs[:length - first_part_length]
+                ], dim=0)
+                traj_acts = th.cat([
+                    self.acts[start_pos:],
+                    self.acts[:length - first_part_length]
+                ], dim=0)
+            
+            # Compute current log probabilities for the trajectory actions
+            with th.no_grad():
+                _, logprobs, _, _ = agent.get_action_and_value(traj_obs, traj_acts)
+            
+            # Compute on-policiness score: sum of log probabilities
+            on_policiness_score = logprobs.sum().item()
+            trajectory.on_policiness_score = on_policiness_score
+            trajectory.last_updated_step = self.global_step
+
+    def sample_by_on_policiness(self, batch_size: int, agent) -> ReplayBufferBatch:
+        """Sample fragments using on-policiness priority sampling.
+        
+        Args:
+            batch_size: Number of fragments to sample.
+            agent: Current agent to compute on-policiness scores.
+            
+        Returns:
+            ReplayBufferBatch with sampled fragments.
+        """
+        # Update on-policiness scores first
+        self.update_on_policiness_scores(agent)
+        
+        # Filter out trajectories that are too short for fragment_length
+        valid_trajectories = [t for t in self.trajectories if t.length >= self.fragment_length]
+        
+        if len(valid_trajectories) == 0:
+            # Fallback to random sampling if no valid trajectories
+            return self.sample(batch_size)
+        
+        # Compute on-policiness scores and rectified Z-scores
+        scores = np.array([t.on_policiness_score for t in valid_trajectories])
+        mean_score = np.mean(scores)
+        std_score = np.std(scores)
+        
+        if std_score == 0:
+            # If all scores are the same, use uniform sampling
+            rectified_scores = np.ones(len(valid_trajectories))
+        else:
+            # Compute rectified Z-scores: max(0, (O(τ) - μ_O(B)) / σ_O(B))
+            z_scores = (scores - mean_score) / std_score
+            rectified_scores = np.maximum(0, z_scores)
+        
+        # Normalize to probabilities
+        if np.sum(rectified_scores) == 0:
+            # If all rectified scores are 0, use uniform sampling
+            probs = np.ones(len(valid_trajectories)) / len(valid_trajectories)
+        else:
+            probs = rectified_scores / np.sum(rectified_scores)
+        
+        # Sample trajectories based on on-policiness probabilities
+        sampled_trajectories = np.random.choice(
+            valid_trajectories, 
+            size=batch_size, 
+            p=probs, 
+            replace=True
+        )
+        
+        # Sample fragments from the selected trajectories
+        sampled_fragments = []
+        for trajectory in sampled_trajectories:
+            # Sample a random starting position within the trajectory
+            max_start = trajectory.length - self.fragment_length
+            if max_start <= 0:
+                start_offset = 0
+            else:
+                start_offset = np.random.randint(0, max_start + 1)
+            
+            # Calculate actual buffer indices
+            fragment_start = (trajectory.start_pos + start_offset) % self.capacity
+            fragment_end = (fragment_start + self.fragment_length) % self.capacity
+            
+            # Extract fragment
+            if fragment_end > fragment_start:
+                fragment_obs = self.obs[fragment_start:fragment_end]
+                fragment_acts = self.acts[fragment_start:fragment_end]
+                fragment_rews = self.rews[fragment_start:fragment_end]
+                fragment_dones = self.dones[fragment_start:fragment_end]
+            else:
+                # Handle wrapping case
+                first_part_length = self.capacity - fragment_start
+                fragment_obs = th.cat([
+                    self.obs[fragment_start:],
+                    self.obs[:self.fragment_length - first_part_length]
+                ], dim=0)
+                fragment_acts = th.cat([
+                    self.acts[fragment_start:],
+                    self.acts[:self.fragment_length - first_part_length]
+                ], dim=0)
+                fragment_rews = th.cat([
+                    self.rews[fragment_start:],
+                    self.rews[:self.fragment_length - first_part_length]
+                ], dim=0)
+                fragment_dones = th.cat([
+                    self.dones[fragment_start:],
+                    self.dones[:self.fragment_length - first_part_length]
+                ], dim=0)
+            
+            sampled_fragments.append({
+                'obs': fragment_obs,
+                'acts': fragment_acts,
+                'rews': fragment_rews,
+                'dones': fragment_dones
+            })
+        
+        # Stack fragments into batch
+        batch_obs = th.stack([f['obs'] for f in sampled_fragments])
+        batch_acts = th.stack([f['acts'] for f in sampled_fragments])
+        batch_rews = th.stack([f['rews'] for f in sampled_fragments])
+        batch_dones = th.stack([f['dones'] for f in sampled_fragments])
+        
+        return ReplayBufferBatch(
+            obs=batch_obs,
+            acts=batch_acts,
+            rews=batch_rews,
+            dones=batch_dones
+        )
 
     def sample(self, batch_size: int) -> ReplayBufferBatch:
         """Sample a batch of transitions from the buffer."""
@@ -138,6 +338,41 @@ class ReplayBuffer:
             rews=self.rews[indices].view(batch_size, self.fragment_length, -1),
             dones=self.dones[indices].view(batch_size, self.fragment_length, -1)
         )
+
+    def get_trajectory_statistics(self) -> dict:
+        """Get statistics about stored trajectories."""
+        if not self.trajectories:
+            return {
+                'num_trajectories': 0,
+                'mean_length': 0.0,
+                'mean_on_policiness_score': 0.0,
+                'std_on_policiness_score': 0.0,
+                'min_on_policiness_score': 0.0,
+                'max_on_policiness_score': 0.0
+            }
+        
+        lengths = [t.length for t in self.trajectories]
+        scores = [t.on_policiness_score for t in self.trajectories]
+        
+        return {
+            'num_trajectories': len(self.trajectories),
+            'mean_length': np.mean(lengths),
+            'mean_on_policiness_score': np.mean(scores),
+            'std_on_policiness_score': np.std(scores),
+            'min_on_policiness_score': np.min(scores),
+            'max_on_policiness_score': np.max(scores)
+        }
+
+    def log_trajectory_statistics(self, writer, global_step: int) -> None:
+        """Log trajectory statistics to tensorboard."""
+        stats = self.get_trajectory_statistics()
+        
+        writer.add_scalar("replay_buffer/num_trajectories", stats['num_trajectories'], global_step)
+        writer.add_scalar("replay_buffer/mean_trajectory_length", stats['mean_length'], global_step)
+        writer.add_scalar("replay_buffer/mean_on_policiness_score", stats['mean_on_policiness_score'], global_step)
+        writer.add_scalar("replay_buffer/std_on_policiness_score", stats['std_on_policiness_score'], global_step)
+        writer.add_scalar("replay_buffer/min_on_policiness_score", stats['min_on_policiness_score'], global_step)
+        writer.add_scalar("replay_buffer/max_on_policiness_score", stats['max_on_policiness_score'], global_step)
 
 class RolloutBuffer:
     def __init__(self,
