@@ -19,7 +19,8 @@ CSV_PATH = "output/exported_runs2.csv"   # path to your CSV
 # map human-readable label → exact exp_name value in the CSV
 COLUMN_MAP = {
     "Hybrid PPO (H)":     "Walker2d-v4__pref_ppo_hybrid_v2__4__1750514347",
-    "VariQuery PPO (V)":  "Walker2d-v4__pref_ppo_variquery_v3__1__1750507449",
+    "VARIQuery PPO (V)":  "Walker2d-v4__pref_ppo_variquery_v3__1__1750507449",
+    "DUO PPO (D)":        "Walker2d-v4__pref_ppo_duo_v1__1__1750507449",
     "Random PPO (R)":     "Walker2d-v4__pref_ppo_random__4__1750424766",
 }
 GLOBAL_STEP_COL = "global_step"          # x-axis column

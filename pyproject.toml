@@ -20,6 +20,8 @@ dependencies = [
     "seaborn (>=0.13.2,<0.14.0)",
     "matplotlib (>=3.10.3,<4.0.0)",
     "umap-learn (>=0.5.7,<0.6.0)",
+    "statsmodels (>=0.14.4,<0.15.0)",
+    "rliable (>=1.2.0,<2.0.0)",
 ]
 
 packages = [{include = "active_rlhf", from="src"}]

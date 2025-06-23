@@ -8,7 +8,7 @@ runs = api.runs("bkuen-ludwig-maximilianuniversity-of-munich/active-rlhf-benchma
 # Accumulate all rows in a list of dicts
 rows = []
 # exp_names = ["pref_ppo_random"]
-exp_names = ["pref_ppo_random", "pref_ppo_variquery_v3", "pref_ppo_hybrid_v2"]
+exp_names = ["pref_ppo_random_v2", "pref_ppo_variquery_v3", "pref_ppo_duo_prio_v1", "pref_ppo_hybrid_v2"]
 
 for run in runs:
     # Check if the run name contains any of the specified experiment names
