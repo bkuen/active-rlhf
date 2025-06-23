@@ -9,11 +9,17 @@ from tqdm import tqdm
 from active_rlhf.data.buffers import ReplayBufferBatch
 
 @dataclass
+class LatentStats:
+    mu: th.Tensor
+    sigma: th.Tensor
+    kl_per_dim: th.Tensor  # KL divergence per latent dimension
+
+@dataclass
 class VAEMetrics:
     recon_loss: float
     kl_loss: float
     total_loss: float
-    latent_means: th.Tensor  # Store latent means for visualization
+    latent_stats: LatentStats
 
 
 class ReplayBufferDataset(Dataset):
@@ -188,7 +194,8 @@ class VAETrainer:
             epoch_total_loss = 0.0
             epoch_recon_loss = 0.0
             epoch_kl_loss = 0.0
-            all_latent_means = []
+            all_mu = []
+            all_logvar = []
 
             for batch in dataloader:
                 x = batch['obs'].to(self.device)
@@ -208,7 +215,14 @@ class VAETrainer:
                 epoch_total_loss += total_loss.item()
                 epoch_recon_loss += recon_loss.item()
                 epoch_kl_loss += kl_loss.item()
-                all_latent_means.append(mu.detach().cpu())
+                all_mu.append(mu.detach().cpu())
+                all_logvar.append(log_var.detach().cpu())
+
+            mu = th.cat(all_mu, dim=0)
+            logvar = th.cat(all_logvar, dim=0)
+
+            sigma = th.exp(0.5 * logvar)
+            kl_per_dim = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
 
             # Average losses over batches
             num_batches = len(dataloader)
@@ -216,7 +230,11 @@ class VAETrainer:
                 recon_loss=epoch_recon_loss / num_batches,
                 kl_loss=epoch_kl_loss / num_batches,
                 total_loss=epoch_total_loss / num_batches,
-                latent_means=th.cat(all_latent_means, dim=0)
+                latent_stats=LatentStats(
+                    mu=mu.mean(dim=0),
+                    sigma=sigma.mean(dim=0),
+                    kl_per_dim= kl_per_dim.mean(dim=0),
+                )
             ))
 
         return epoch_metrics

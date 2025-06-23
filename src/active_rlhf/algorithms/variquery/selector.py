@@ -21,6 +21,7 @@ class VARIQuerySelector(Selector):
                  writer: SummaryWriter,
                  reward_ensemble: RewardEnsemble,
                  reward_norm: RunningStat,
+                 vae_state_dim: int,
                  fragment_length: int = 50,
                  vae_latent_dim: int = 16,
                  vae_hidden_dims: List[int] = [128, 64, 32],
@@ -42,6 +43,23 @@ class VARIQuerySelector(Selector):
         self.vae_batch_size = vae_batch_size
         self.vae_num_epochs = vae_num_epochs
         self.device = device
+
+        # self.vae = StateVAE(
+        #     state_dim=vae_state_dim,
+        #     latent_dim=self.vae_latent_dim,
+        #     fragment_length=self.fragment_length,
+        #     hidden_dims=self.vae_hidden_dims,
+        #     dropout=self.vae_dropout,
+        # )
+        #
+        # self.vae_trainer = VAETrainer(
+        #     vae=self.vae,
+        #     lr=self.vae_lr,
+        #     weight_decay=self.vae_weight_decay,
+        #     batch_size=self.vae_batch_size,
+        #     num_epochs=self.vae_num_epochs,
+        #     device=self.device
+        # )
 
         self.visualizer = VAEVisualizer(writer=writer)
         
@@ -79,16 +97,21 @@ class VARIQuerySelector(Selector):
         assert len(first_indices) == len(second_indices)
 
         # Step 5: Rank by uncertainty estimate
-        ranked_pair_indices = self._rank_pairs(first_indices, second_indices, batch).to(self.device)
+        with th.no_grad():
+            rewards = self.reward_ensemble(batch.obs, batch.acts)
+            # rewards_norm = self.reward_norm(rewards)
+        ranked_pair_indices = self._rank_pairs(rewards, first_indices, second_indices).to(self.device)
 
         top_indices = ranked_pair_indices[:num_pairs].to(self.device)
         top_first_indices = first_indices[top_indices].to(self.device)
         top_second_indices = second_indices[top_indices].to(self.device)
 
         # Step 6: Visualize latent space and clusters
+        returns = rewards.mean(dim=-1).sum(dim=-1)
         self.visualizer.visualize(
             metrics=metrics,
             latents=latent_states,
+            rewards=returns,
             first_indices=top_first_indices,
             second_indices=top_second_indices,
             clusters=clusters,
@@ -150,13 +173,9 @@ class VARIQuerySelector(Selector):
 
         return th.tensor(first_indices, device=self.device), th.tensor(second_indices, device=self.device)
     
-    def _rank_pairs(self, first_indices: th.Tensor, second_indices: th.Tensor, batch: ReplayBufferBatch) -> th.Tensor:
-        with th.no_grad():
-            rewards = self.reward_ensemble(batch.obs, batch.acts)
-            rewards_norm = self.reward_norm(rewards)
-
+    def _rank_pairs(self, rewards: th.Tensor, first_indices: th.Tensor, second_indices: th.Tensor) -> th.Tensor:
         uncertainties = estimate_uncertainties(
-            rewards=rewards_norm,
+            rewards=rewards,
             first_indices=first_indices,
             second_indices=second_indices,
             method="return_diff"

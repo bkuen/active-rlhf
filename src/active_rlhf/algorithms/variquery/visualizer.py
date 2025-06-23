@@ -58,34 +58,34 @@ class VAEVisualizer:
         plt.close()
 
     def plot_latent_heatmap(self, metrics: List[VAEMetrics], global_step: int):
-        """Plot and save heatmap of latent dimensions over epochs.
+        """Plot and save heatmap of kl per dimension over epochs.
         
         Args:
             metrics: List of VAEMetrics for each epoch
             global_step: Current training step for file naming
         """
-        # Stack latent means from all epochs
-        latent_means = th.stack([m.latent_means.mean(dim=0) for m in metrics])
+        # Stack kl per dimension across epochs
+        kl_per_dim = th.stack([m.latent_stats.kl_per_dim for m in metrics], dim=0)
         
         # Convert to numpy for plotting
-        latent_means_np = latent_means.numpy()
+        kl_per_dim_np = kl_per_dim.numpy()
         
         # Create heatmap
         plt.figure(figsize=(12, 8))
-        sns.heatmap(latent_means_np.T, 
+        sns.heatmap(kl_per_dim_np.T,
                    cmap='viridis',
                    xticklabels=range(len(metrics)),
-                   yticklabels=range(latent_means_np.shape[1]))
+                   yticklabels=range(kl_per_dim_np.shape[1]))
         
         plt.xlabel('Epoch')
-        plt.ylabel('Latent Dimension')
-        plt.title('Latent Space Evolution Over Training')
+        plt.ylabel('KL Per Dimension')
+        plt.title('KL Divergence Per Dimension Over Epochs')
         
         # Log to tensorboard
         self.writer.add_figure('variquery/vae_latent', plt.gcf(), global_step)
-        
-        # Log raw latent means as a tensor
-        self.writer.add_tensor('variquery/vae_latent_means', latent_means, global_step)
+
+        # # Log raw latent means as a tensor
+        # self.writer.add_tensor('variquery/vae_latent_means', latent_means, global_step)
         
         plt.close()
 
@@ -231,9 +231,45 @@ class VAEVisualizer:
         
         plt.close()
 
+    def plot_reward_distribution_per_cluster(self,
+                                             rewards: th.Tensor,
+                                             clusters: List[List[int]],
+                                             global_step: int):
+        """
+        Plots the distribution of rewards for each cluster as a boxplot.
+
+        Args:
+            rewards (th.Tensor): 1D tensor of reward values.
+            clusters (List[List[int]]): List of clusters, each is a list of indices into rewards.
+            global_step (int): Current training step (for title/labeling).
+        """
+        # Move to CPU numpy array
+        rewards_np = rewards.detach().cpu().numpy()
+
+        # Gather reward values per cluster
+        cluster_values = [rewards_np[indices] for indices in clusters]
+
+        # Prepare labels with cluster ID and size
+        labels = [f"C{i}\n(n={len(indices)})" for i, indices in enumerate(clusters)]
+
+        # Create the plot
+        fig, ax = plt.subplots(figsize=(max(6, len(clusters) * 1.5), 6))
+        ax.boxplot(cluster_values, labels=labels, showfliers=False)
+        ax.set_title(f"Reward Distribution per Cluster (step {global_step})")
+        ax.set_xlabel("Cluster")
+        ax.set_ylabel("Reward")
+        ax.grid(axis="y", linestyle="--", alpha=0.7)
+
+        plt.tight_layout()
+
+        self.writer.add_figure('variquery/vae_cluster_rewards', plt.gcf(), global_step)
+
+        plt.close()
+
     def visualize(self,
                   metrics: List[VAEMetrics],
                   latents: th.Tensor,
+                  rewards: th.Tensor,
                   clusters: List[List[int]],
                   first_indices: th.Tensor,
                   second_indices: th.Tensor,
@@ -243,6 +279,7 @@ class VAEVisualizer:
         Args:
             metrics: List of VAEMetrics for each epoch
             latents: Tensor of latent states
+            rewards: Tensor of rewards corresponding to latent states
             clusters: List of clusters derived from latent states
             first_indices: Indices of first trajectories in pairs
             second_indices: Indices of second trajectories in pairs
@@ -255,5 +292,10 @@ class VAEVisualizer:
             clusters=clusters,
             first_indices=first_indices,
             second_indices=second_indices,
+            global_step=global_step,
+        )
+        self.plot_reward_distribution_per_cluster(
+            rewards=rewards,
+            clusters=clusters,
             global_step=global_step,
         )

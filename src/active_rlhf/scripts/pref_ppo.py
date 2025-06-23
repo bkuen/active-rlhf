@@ -97,6 +97,8 @@ class Args:
     """the learning rate of the reward network"""
     reward_net_weight_decay: float = 0.0
     """the weight decay of the reward network"""
+    reward_net_max_grad_norm: float = 1.0
+    """the maximum norm for the gradient clipping of the reward network"""
     reward_net_batch_size: int = 32
     """the batch size of the reward network"""
     reward_net_minibatch_size: int = 32
@@ -276,6 +278,7 @@ if __name__ == "__main__":
         writer=writer,
         epochs=args.reward_net_epochs,
         lr=args.reward_net_lr,
+        max_grad_norm=args.reward_net_max_grad_norm,
         weight_decay=args.reward_net_weight_decay,
         batch_size=args.reward_net_batch_size,
         minibatch_size=args.reward_net_minibatch_size,
@@ -300,6 +303,7 @@ if __name__ == "__main__":
                 writer=writer,
                 reward_norm=reward_norm,
                 reward_ensemble=reward_ensemble,
+                vae_state_dim=envs.single_observation_space.shape[0],
                 fragment_length=args.fragment_length,
                 vae_latent_dim=args.variquery_vae_latent_dim,
                 vae_hidden_dims=args.variquery_vae_hidden_dims,

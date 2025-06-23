@@ -1,12 +1,12 @@
 poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
-  --exp-name="pref_ppo_variquery_prio_v1" \
+  --exp-name="pref_ppo_variquery_v5" \
   --seed=1 \
   --torch-deterministic=True \
   --cuda=True \
   --track=True \
-  --wandb-project-name="active-rlhf-hybrid-v2" \
+  --wandb-project-name="active-rlhf-tests" \
   --wandb-entity="bkuen-ludwig-maximilianuniversity-of-munich" \
-  --wandb-tags "variquery_prio_v1" \
+  --wandb-tags "duo_variquery_v5" \
   --capture-video=False \
   --save-model=True \
   --upload-model=False \
@@ -30,8 +30,9 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --target-kl=None \
   --replay-buffer-capacity=1000000 \
   --reward-net-epochs=5 \
-  --reward-net-lr=1e-3 \
+  --reward-net-lr=3e-4 \
   --reward-net-weight-decay=1e-4 \
+  --reward-net-max-grad-norm=1.0 \
   --reward-net-batch-size=32 \
   --reward-net-minibatch-size=32 \
   --reward-net-ensemble-size=3 \
@@ -41,7 +42,7 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --total-queries=500 \
   --queries-per-session=10 \
   --selector-type="variquery" \
-  --sampling-strategy="priority" \
+  --sampling-strategy="uniform" \
   --oversampling-factor=10.0 \
   --fragment-length=50 \
   --variquery-vae-latent-dim=16 \

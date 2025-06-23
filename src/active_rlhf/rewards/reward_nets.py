@@ -179,6 +179,7 @@ class RewardTrainer:
                  epochs: int = 1,
                  lr: float = 1e-3,
                  weight_decay: float = 0.0,
+                 max_grad_norm: float = 1.0,
                  batch_size: int = 32,
                  minibatch_size: Optional[int] = None,
                  val_split: float = 0.2,
@@ -186,6 +187,7 @@ class RewardTrainer:
         self.preference_model = preference_model
         self.writer = writer
         self.device = device
+        self.max_grad_norm = max_grad_norm
         # Create separate optimizers for each ensemble member
         self.optimizers = [
             th.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
@@ -277,7 +279,10 @@ class RewardTrainer:
         # Create dataloaders for training and validation
         train_loader = self._make_dataloader(train_buffer, self.device)
         val_loader = self._make_dataloader(val_buffer, self.device)
-        
+
+        raw_grad_norm_sum = 0.0
+        raw_grad_norm_count = 0
+
         for epoch in tqdm(range(1, self.epochs+1), desc="Training Reward Model"):
             # Training phase
             self.preference_model.train()
@@ -306,7 +311,9 @@ class RewardTrainer:
                         # Backward pass for this member
                         self.optimizers[i].zero_grad()
                         member_loss.backward()
-                        nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
+                        raw_norm = nn.utils.clip_grad_norm_(net.parameters(), max_norm=self.max_grad_norm)
+                        raw_grad_norm_sum += raw_norm
+                        raw_grad_norm_count += 1
                         self.optimizers[i].step()
                     
                     epoch_train_loss += total_loss.item()
@@ -370,5 +377,6 @@ class RewardTrainer:
         self.writer.add_scalar("reward/train_loss", final_train_loss, global_step)
         self.writer.add_scalar("reward/val_loss", final_val_loss, global_step)
         self.writer.add_scalar("reward/accuracy", final_reward_accuracy, global_step)
+        self.writer.add_scalar("reward/raw_grad_norm_mean", raw_grad_norm_sum / raw_grad_norm_count, global_step)
 
         return final_train_loss, final_val_loss, final_reward_accuracy

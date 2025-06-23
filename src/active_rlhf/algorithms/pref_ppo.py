@@ -245,9 +245,10 @@ class AgentTrainer:
             obs = rollout_sample.obs.reshape((-1,) + self.envs.single_observation_space.shape)
             acts = rollout_sample.actions.reshape((-1,) + self.envs.single_action_space.shape)
             raw_rewards = self.reward_ensemble.mean_reward(obs, acts).unsqueeze(-1)
-            self.reward_norm.update(raw_rewards)
-            rewards = self.reward_norm.normalize(raw_rewards)
-            rewards = 5 * th.tanh(rewards / 5)
+            # self.reward_norm.update(raw_rewards)
+            # rewards = self.reward_norm.normalize(raw_rewards)
+            # rewards = 5 * th.tanh(rewards / 5)
+            rewards = raw_rewards
 
             # sat = (raw_rewards.abs() > self.reward_norm.std() * 5).float().mean()
             # self.writer.add_scalar("reward/agent_clamp_sat", sat, global_step)
