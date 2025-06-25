@@ -1,4 +1,5 @@
-from typing import TypedDict, Union, Sequence, List, Optional
+from random import random
+from typing import TypedDict, Union, Sequence, List, Optional, Literal
 import numpy as np
 import torch as th
 from gymnasium.vector import SyncVectorEnv
@@ -64,6 +65,7 @@ class TrajectoryInfo:
     """Information about a trajectory stored in the replay buffer."""
     start_pos: int
     length: int
+    split: Literal["train", "val"]
     on_policiness_score: float
     last_updated_step: int
 
@@ -89,13 +91,14 @@ class ReplayBuffer:
         self.device = device
         self.global_step = 0
 
-    def add(self, obs: th.Tensor, act: th.Tensor, rew: th.Tensor, done: th.Tensor):
+    def add(self, obs: th.Tensor, act: th.Tensor, rew: th.Tensor, done: th.Tensor, split: Literal["train", "val"] = "train"):
         """Add a new transition to the buffer.
         Args:
             obs: The observation tensor of shape (num_steps, obs_dim).
             act: The action tensor of shape (num_steps, act_dim).
             rew: The reward tensor of shape (num_steps, 1).
             done: The done tensor of shape (num_steps, 1).
+            split: The split to which this trajectory belongs, either "train" or "val".
         """
         fragment_length = obs.shape[0]
         start_idx = self.pos
@@ -130,7 +133,8 @@ class ReplayBuffer:
             start_pos=start_idx,
             length=fragment_length,
             on_policiness_score=0.0,  # Will be updated later
-            last_updated_step=self.global_step
+            last_updated_step=self.global_step,
+            split=split
         )
         self.trajectories.append(trajectory_info)
 
@@ -169,7 +173,7 @@ class ReplayBuffer:
         for trajectory in trajectories_to_remove:
             self.trajectories.remove(trajectory)
 
-    def add_rollout(self, rollout: RolloutBufferBatch):
+    def add_rollout(self, rollout: RolloutBufferBatch, split: Literal["train", "val"] = "train"):
         obs = rollout.obs.reshape((-1,) + self.envs.single_observation_space.shape)
         acts = rollout.actions.reshape((-1,) + self.envs.single_action_space.shape)
         rews = rollout.ground_truth_rewards.reshape(-1)
@@ -181,6 +185,7 @@ class ReplayBuffer:
             act=acts,
             rew=rews,  # Ensure rew is of shape (fragment_length, 1)
             done=dones,  # Ensure done is of shape (fragment_length, 1)
+            split=split
         )
 
     def update_on_policiness_scores(self, agent) -> None:
@@ -219,12 +224,13 @@ class ReplayBuffer:
             trajectory.on_policiness_score = on_policiness_score
             trajectory.last_updated_step = self.global_step
 
-    def sample_by_on_policiness(self, batch_size: int, agent) -> ReplayBufferBatch:
+    def sample_by_on_policiness(self, batch_size: int, agent, split: Literal["train", "val"] = "train") -> ReplayBufferBatch:
         """Sample fragments using on-policiness priority sampling.
         
         Args:
             batch_size: Number of fragments to sample.
             agent: Current agent to compute on-policiness scores.
+            split: The split to sample from, either "train" or "val".
             
         Returns:
             ReplayBufferBatch with sampled fragments.
@@ -233,11 +239,11 @@ class ReplayBuffer:
         self.update_on_policiness_scores(agent)
         
         # Filter out trajectories that are too short for fragment_length
-        valid_trajectories = [t for t in self.trajectories if t.length >= self.fragment_length]
+        valid_trajectories = [t for t in self.trajectories if t.length >= self.fragment_length and t.split == split]
         
         if len(valid_trajectories) == 0:
             # Fallback to random sampling if no valid trajectories
-            return self.sample(batch_size)
+            return self.sample(batch_size, split=split)
         
         # Compute on-policiness scores and rectified Z-scores
         scores = np.array([t.on_policiness_score for t in valid_trajectories])
@@ -332,6 +338,34 @@ class ReplayBuffer:
         max_size = min(self.size, self.capacity)
         start_indices = th.randint(0, max_size, (batch_size,))
         indices = (start_indices[:, None] + th.arange(self.fragment_length)[None, :]) % max_size
+        return ReplayBufferBatch(
+            obs=self.obs[indices].view(batch_size, self.fragment_length, -1),
+            acts=self.acts[indices].view(batch_size, self.fragment_length, -1),
+            rews=self.rews[indices].view(batch_size, self.fragment_length, -1),
+            dones=self.dones[indices].view(batch_size, self.fragment_length, -1)
+        )
+
+    def sample2(self, batch_size: int, split: Literal["train", "val"] = "train") -> ReplayBufferBatch:
+        """
+        Sample `batch_size` length-`fragment_length` fragments from either
+        the training or validation partition.  Every fragment is fully
+        contained inside ONE episode; multiple fragments can come from the
+        same episode.
+        """
+        eps = [t for t in self.trajectories if t.length >= self.fragment_length and t.split == split]
+        chosen_idx = np.random.choice(len(eps), size=batch_size, replace=True)
+
+        # 2. within each episode choose a start offset
+        start_indices = []
+        for ep_idx in chosen_idx:
+            ep = eps[ep_idx]
+            ep_len = ep.length
+            assert ep_len >= self.fragment_length, "episode length must be at least fragment_length"
+
+            start_indices.append(ep.start_pos + np.random.randint(0, ep_len - self.fragment_length + 1))
+
+        start_indices = th.tensor(start_indices, device=self.device)
+        indices = (start_indices[:, None] + th.arange(self.fragment_length, device=self.device)[None, :])
         return ReplayBufferBatch(
             obs=self.obs[indices].view(batch_size, self.fragment_length, -1),
             acts=self.acts[indices].view(batch_size, self.fragment_length, -1),

@@ -143,6 +143,8 @@ class Args:
     """dropout rate for the VAE"""
     variquery_vae_kl_weight: float = 1.0
     """weight of the KL loss term in VAE training"""
+    variquery_vae_kl_warmup_epochs: int = 40
+    """number of epochs to warm up the KL loss term in VAE training"""
 
     # DUO specific arguments
     duo_consensual_filter: bool = False
@@ -312,6 +314,8 @@ if __name__ == "__main__":
                 vae_dropout=args.variquery_vae_dropout,
                 vae_batch_size=args.variquery_vae_batch_size,
                 vae_num_epochs=args.variquery_vae_num_epochs,
+                vae_kl_weight=args.variquery_vae_kl_weight,
+                vae_kl_warmup_epochs=args.variquery_vae_kl_warmup_epochs,
                 device=device,
             )
         case "duo":
@@ -410,7 +414,7 @@ if __name__ == "__main__":
             num_pairs = args.queries_per_session if next_query_step != 0 else 32
 
             if args.sampling_strategy == "uniform":
-                reward_samples = replay_buffer.sample(int(num_pairs*args.oversampling_factor))
+                reward_samples = replay_buffer.sample2(int(num_pairs*args.oversampling_factor))
             elif args.sampling_strategy == "priority":
                 replay_buffer.update_on_policiness_scores(agent)
                 replay_buffer.log_trajectory_statistics(writer, global_step)

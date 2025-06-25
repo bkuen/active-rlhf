@@ -1,5 +1,5 @@
 from typing import List, Tuple
-from active_rlhf.algorithms.variquery.vae import StateVAE, VAETrainer
+from active_rlhf.algorithms.variquery.vae import StateVAE, VAETrainer, GRUStateVAE
 from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
@@ -30,6 +30,8 @@ class VARIQuerySelector(Selector):
                  vae_dropout: float = 0.1,
                  vae_batch_size: int = 32,
                  vae_num_epochs: int = 25,
+                 vae_kl_weight: float = 1.0,
+                 vae_kl_warmup_epochs: int = 40,
                  device: str = "cuda" if th.cuda.is_available() else "cpu"
                  ):
         self.reward_ensemble = reward_ensemble
@@ -42,6 +44,8 @@ class VARIQuerySelector(Selector):
         self.vae_dropout = vae_dropout
         self.vae_batch_size = vae_batch_size
         self.vae_num_epochs = vae_num_epochs
+        self.vae_kl_weight = vae_kl_weight
+        self.vae_kl_warmup_epochs = vae_kl_warmup_epochs
         self.device = device
 
         # self.vae = StateVAE(
@@ -51,31 +55,18 @@ class VARIQuerySelector(Selector):
         #     hidden_dims=self.vae_hidden_dims,
         #     dropout=self.vae_dropout,
         # )
-        #
-        # self.vae_trainer = VAETrainer(
-        #     vae=self.vae,
-        #     lr=self.vae_lr,
-        #     weight_decay=self.vae_weight_decay,
-        #     batch_size=self.vae_batch_size,
-        #     num_epochs=self.vae_num_epochs,
-        #     device=self.device
-        # )
 
-        self.visualizer = VAEVisualizer(writer=writer)
-        
-
-    def select_pairs(self, batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
-        batch_size = batch.obs.shape[0]
-        vae = StateVAE(
-            state_dim=batch.obs.shape[2],
+        self.vae = GRUStateVAE(
+            state_dim=vae_state_dim,
             latent_dim=self.vae_latent_dim,
             fragment_length=self.fragment_length,
             hidden_dims=self.vae_hidden_dims,
             dropout=self.vae_dropout,
+            device=device,
         )
 
-        vae_trainer = VAETrainer(
-            vae=vae,
+        self.vae_trainer = VAETrainer(
+            vae=self.vae,
             lr=self.vae_lr,
             weight_decay=self.vae_weight_decay,
             batch_size=self.vae_batch_size,
@@ -83,11 +74,35 @@ class VARIQuerySelector(Selector):
             device=self.device
         )
 
+        self.visualizer = VAEVisualizer(writer=writer)
+        
+
+    def select_pairs(self, batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
+        batch_size = batch.obs.shape[0]
+        # vae = StateVAE(
+        #     state_dim=batch.obs.shape[2],
+        #     latent_dim=self.vae_latent_dim,
+        #     fragment_length=self.fragment_length,
+        #     hidden_dims=self.vae_hidden_dims,
+        #     dropout=self.vae_dropout,
+        # )
+        #
+        # vae_trainer = VAETrainer(
+        #     vae=vae,
+        #     lr=self.vae_lr,
+        #     weight_decay=self.vae_weight_decay,
+        #     batch_size=self.vae_batch_size,
+        #     num_epochs=self.vae_num_epochs,
+        #     kl_weight_beta=self.vae_kl_weight,
+        #     kl_warmup_epochs=self.vae_kl_warmup_epochs,
+        #     device=self.device
+        # )
+
         # Step 2: Train VAE and encode states
-        metrics = vae_trainer.train(batch, global_step)
+        metrics = self.vae_trainer.train(batch, global_step)
 
         with th.no_grad():
-            latent_states, _, _ = vae.encode(batch.obs)
+            latent_states, _, _ = self.vae.encode(batch.obs)
 
         # Step 3: Cluster and sample pairs
         clusters = self._cluster_latent_space(latent_states=latent_states, num_clusters=num_pairs)

@@ -25,9 +25,9 @@ class VAEMetrics:
 class ReplayBufferDataset(Dataset):
     def __init__(self, buffer_batch: ReplayBufferBatch):
         self.obs = buffer_batch.obs
-        self.acts = buffer_batch.acts
-        self.rews = buffer_batch.rews
-        self.dones = buffer_batch.dones
+        # self.acts = buffer_batch.acts
+        # self.rews = buffer_batch.rews
+        # self.dones = buffer_batch.dones
 
     def __len__(self):
         return len(self.obs)
@@ -35,11 +35,139 @@ class ReplayBufferDataset(Dataset):
     def __getitem__(self, idx):
         return {
             'obs': self.obs[idx],
-            'acts': self.acts[idx],
-            'rews': self.rews[idx],
-            'dones': self.dones[idx]
+            # 'acts': self.acts[idx],
+            # 'rews': self.rews[idx],
+            # 'dones': self.dones[idx]
         }
 
+class GRUStateVAE(nn.Module):
+    """
+    Sequence-aware VAE for state fragments.
+    Encodes a sequence with a stacked GRU and decodes the latent code with
+    another stacked GRU that rolls the latent vector out over time.
+    """
+
+    def __init__(
+        self,
+        state_dim: int,
+        latent_dim: int,
+        fragment_length: int,
+        hidden_dims: List[int] = [128, 64, 32],
+        dropout: float = 0.1,
+        device: str = "cuda" if th.cuda.is_available() else "cpu",
+    ):
+        super().__init__()
+        self.state_dim = state_dim
+        self.latent_dim = latent_dim
+        self.fragment_length = fragment_length
+        self.hidden_dims = hidden_dims
+        self.dropout = dropout
+        self.device = device
+
+        # ── Encoder ────────────────────────────────────────────────────────────
+        # Same hidden size for every GRU layer (PyTorch limitation); we use
+        # the *last* entry in hidden_dims so fc_mu/fc_logvar stay unchanged.
+        enc_hidden_size = hidden_dims[-1]
+        self.encoder_rnn = nn.GRU(
+            input_size=state_dim,
+            hidden_size=enc_hidden_size,
+            num_layers=len(hidden_dims),
+            batch_first=True,
+            dropout=dropout if len(hidden_dims) > 1 else 0.0,
+        ).to(device)
+
+        # Latent projections
+        self.fc_mu = nn.Linear(enc_hidden_size, latent_dim).to(device)
+        self.fc_logvar = nn.Linear(enc_hidden_size, latent_dim).to(device)
+
+        # ── Decoder ────────────────────────────────────────────────────────────
+        # Takes the latent vector *at every timestep* as input.
+        dec_hidden_size = hidden_dims[-1]
+        self.decoder_rnn = nn.GRU(
+            input_size=latent_dim,
+            hidden_size=dec_hidden_size,
+            num_layers=len(hidden_dims),
+            batch_first=True,
+            dropout=dropout if len(hidden_dims) > 1 else 0.0,
+        ).to(device)
+
+        # Map decoder hidden states back to state space
+        self.output_layer = nn.Sequential(
+            nn.Linear(dec_hidden_size, state_dim),
+            nn.Tanh(),  # keep the output range in (-1, 1) like the original
+        ).to(device)
+
+    # ────────────────────────────────────────────────────────────────────────
+    #                           VAE utilities
+    # ────────────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _reparameterize(mu: th.Tensor, log_var: th.Tensor, device: str) -> th.Tensor:
+        std = th.exp(0.5 * log_var)
+        eps = th.randn_like(std, device=device)
+        return mu + eps * std
+
+    # ────────────────────────────────────────────────────────────────────────
+    #                           Public API
+    # ────────────────────────────────────────────────────────────────────────
+    def encode(self, x: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """
+        Args
+        ----
+        x : Tensor, shape (B, L, state_dim)
+
+        Returns
+        -------
+        z       : (B, latent_dim) — sampled latent
+        mu      : (B, latent_dim)
+        log_var : (B, latent_dim)
+        """
+        x = x.to(self.device)                               # (B, L, D)
+        _, h_n = self.encoder_rnn(x)                        # h_n: (num_layers, B, H)
+        h_last = h_n[-1]                                    # (B, H)
+
+        mu = self.fc_mu(h_last)                             # (B, latent_dim)
+        log_var = self.fc_logvar(h_last)                    # (B, latent_dim)
+        z = self._reparameterize(mu, log_var, self.device)  # (B, latent_dim)
+
+        return z, mu, log_var
+
+    def decode(self, z: th.Tensor) -> th.Tensor:
+        """
+        Args
+        ----
+        z : Tensor, shape (B, latent_dim)
+
+        Returns
+        -------
+        x_hat : (B, L, state_dim)
+        """
+        z = z.to(self.device)
+        B = z.size(0)
+
+        # Use the latent vector as the *input token* at every timestep
+        z_seq = z.unsqueeze(1).repeat(1, self.fragment_length, 1)  # (B, L, latent_dim)
+        dec_out, _ = self.decoder_rnn(z_seq)                      # (B, L, H)
+
+        x_hat = self.output_layer(dec_out)                        # (B, L, state_dim)
+        return x_hat
+
+    def forward(self, x: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """
+        The familiar VAE forward pass.
+
+        Args
+        ----
+        x : (B, L, state_dim)
+
+        Returns
+        -------
+        x_hat : (B, L, state_dim)
+        mu    : (B, latent_dim)
+        log_var : (B, latent_dim)
+        """
+        z, mu, log_var = self.encode(x)
+        x_hat = self.decode(z)
+        return x_hat, mu, log_var
 
 class StateVAE(nn.Module):
     def __init__(self, 
@@ -71,7 +199,8 @@ class StateVAE(nn.Module):
         for hidden_dim in self.hidden_dims:
             encoder_layers.extend([
                 nn.Linear(in_dim, hidden_dim),
-                nn.ReLU(),
+                nn.LayerNorm(hidden_dim),
+                nn.ReLU()
             ])
             in_dim = hidden_dim
         return nn.Sequential(*encoder_layers)
@@ -82,13 +211,15 @@ class StateVAE(nn.Module):
         for hidden_dim in reversed(self.hidden_dims):
             decoder_layers.extend([
                 nn.Linear(in_dim, hidden_dim),
-                nn.ReLU(),
-                nn.Dropout(self.dropout),
+                nn.ReLU()
+                # nn.Dropout(self.dropout),
             ])
             in_dim = hidden_dim
         final_layer = nn.Linear(in_dim, self.flat_dim)
         decoder_layers.extend([
             final_layer,
+            nn.LayerNorm(self.flat_dim),
+            nn.Tanh(),
         ])
 
         return nn.Sequential(*decoder_layers)
@@ -161,17 +292,21 @@ class StateVAE(nn.Module):
 
 class VAETrainer:
     def __init__(self,
-                 vae: StateVAE,
+                 vae: GRUStateVAE,
                  lr: float = 1e-3,
                  weight_decay: float = 1e-4,
                  batch_size: int = 32,
                  num_epochs: int = 25,
+                 kl_weight_beta: float = 1.0,
+                 kl_warmup_epochs: int = 40,
                  device: str = "cuda" if th.cuda.is_available() else "cpu"):
         self.vae = vae
         self.device = device
         self.optimizer = th.optim.Adam(self.vae.parameters(), lr=lr, weight_decay=weight_decay)
         self.batch_size = batch_size
         self.num_epochs = num_epochs
+        self.kl_warmup_epochs = kl_warmup_epochs
+        self.kl_weight_beta = kl_weight_beta
 
     def train(self, 
               buffer_batch: ReplayBufferBatch, 
@@ -190,6 +325,7 @@ class VAETrainer:
 
         epoch_metrics = []
 
+        self.vae.train()
         for epoch in tqdm(range(self.num_epochs), desc="Training VAE"):
             epoch_total_loss = 0.0
             epoch_recon_loss = 0.0
@@ -204,7 +340,8 @@ class VAETrainer:
                 x_hat, mu, log_var = self.vae(x)
 
                 # Compute losses
-                total_loss, recon_loss, kl_loss = self._loss(x, x_hat, mu, log_var)
+                kl_weight_beta = self._get_kl_weight(epoch)
+                total_loss, recon_loss, kl_loss = self._loss(x, x_hat, mu, log_var, kl_weight_beta=kl_weight_beta)
 
                 # Backward pass
                 self.optimizer.zero_grad()
@@ -239,6 +376,40 @@ class VAETrainer:
 
         return epoch_metrics
 
+    def _get_kl_weight(self, epoch: int) -> float:
+        """Compute the current KL weight based on linear warmup.
+
+        Args:
+            epoch: Current epoch number
+
+        Returns:
+            Current KL weight to use in the loss function
+        """
+        if self.kl_warmup_epochs is None or epoch >= self.kl_warmup_epochs:
+            return self.kl_weight_beta
+
+        # Linear warmup: β = min(1.0, epoch / N_warmup) * β_target
+        progress = epoch / self.kl_warmup_epochs
+        return min(1.0, progress) * self.kl_weight_beta
+
+    def _get_kl_weight_cyclic(self, epoch: int) -> float:
+        """Compute the current KL weight using cyclic annealing.
+
+        Args:
+            epoch: Current epoch number
+
+        Returns:
+            Current KL weight to use in the loss function
+        """
+        cycle_length = self.kl_warmup_epochs  # One full cycle = warmup_epochs
+        cycle_progress = (epoch % cycle_length) / cycle_length  # 0 to 1 within each cycle
+
+        # Optional: change shape of the cycle — linear ramp up, cosine, etc.
+        beta = self.kl_weight_beta * cycle_progress  # Linear ramp
+        # beta = self.kl_weight_beta * (1 - math.cos(math.pi * cycle_progress)) / 2  # Cosine ramp
+
+        return beta
+
     def _loss(self, 
               x: th.Tensor, 
               x_hat: th.Tensor,
@@ -253,7 +424,6 @@ class VAETrainer:
             x_hat: (batch_size, fragment_length, state_dim)
             mu: (batch_size, latent_dim)
             logvar: (batch_size, latent_dim)
-            kl_weight_beta: float
 
         Returns:
             total_loss: (batch_size)
