@@ -1,5 +1,5 @@
 from typing import List, Tuple
-from active_rlhf.algorithms.variquery.vae import StateVAE, VAETrainer, GRUStateVAE
+from active_rlhf.algorithms.variquery.vae import StateVAE, VAETrainer, GRUStateVAE, AttnStateVAE
 from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
@@ -56,12 +56,12 @@ class VARIQuerySelector(Selector):
         #     dropout=self.vae_dropout,
         # )
 
-        self.vae = GRUStateVAE(
+        self.vae = AttnStateVAE(
             state_dim=vae_state_dim,
             latent_dim=self.vae_latent_dim,
             fragment_length=self.fragment_length,
-            hidden_dims=self.vae_hidden_dims,
-            dropout=self.vae_dropout,
+            # hidden_dims=vae_hidden_dims,
+            # dropout=self.vae_dropout,
             device=device,
         )
 

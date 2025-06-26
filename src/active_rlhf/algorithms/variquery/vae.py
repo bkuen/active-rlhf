@@ -101,7 +101,7 @@ class GRUStateVAE(nn.Module):
     #                           VAE utilities
     # ────────────────────────────────────────────────────────────────────────
     @staticmethod
-    def _reparameterize(mu: th.Tensor, log_var: th.Tensor, device: str) -> th.Tensor:
+    def reparameterize(mu: th.Tensor, log_var: th.Tensor, device: str) -> th.Tensor:
         std = th.exp(0.5 * log_var)
         eps = th.randn_like(std, device=device)
         return mu + eps * std
@@ -127,7 +127,7 @@ class GRUStateVAE(nn.Module):
 
         mu = self.fc_mu(h_last)                             # (B, latent_dim)
         log_var = self.fc_logvar(h_last)                    # (B, latent_dim)
-        z = self._reparameterize(mu, log_var, self.device)  # (B, latent_dim)
+        z = self.reparameterize(mu, log_var, self.device)  # (B, latent_dim)
 
         return z, mu, log_var
 
@@ -146,6 +146,8 @@ class GRUStateVAE(nn.Module):
 
         # Use the latent vector as the *input token* at every timestep
         z_seq = z.unsqueeze(1).repeat(1, self.fragment_length, 1)  # (B, L, latent_dim)
+        noise = th.randn_like(z_seq) * 0.05
+        z_seq = z_seq + noise # Add some noise to the latent vector to encourage exploration
         dec_out, _ = self.decoder_rnn(z_seq)                      # (B, L, H)
 
         x_hat = self.output_layer(dec_out)                        # (B, L, state_dim)
@@ -290,9 +292,82 @@ class StateVAE(nn.Module):
         x_hat = self.decode(z)
         return x_hat, mu, log_var
 
+class AttnStateVAE(nn.Module):
+    def __init__(self, state_dim, latent_dim, fragment_length,
+                 n_heads=4, attn_dim=128, device="cuda"):
+        super().__init__()
+        self.state_dim = state_dim
+        self.latent_dim = latent_dim
+        self.fragment_length = fragment_length
+        self.device = device
+
+        # 1) A single self-attention layer
+        #    embed_dim=attn_dim must be divisible by n_heads
+        self.input_proj = nn.Linear(state_dim, attn_dim)
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=attn_dim,
+            num_heads=n_heads,
+            batch_first=True
+        )
+        self.post_attn = nn.Sequential(
+            nn.Linear(attn_dim, attn_dim),
+            nn.ReLU()
+        )
+
+        # 2) Latent projections
+        self.fc_mu     = nn.Linear(attn_dim, latent_dim)
+        self.fc_logvar = nn.Linear(attn_dim, latent_dim)
+
+        # 3) Simple decoder (just an MLP for demo)
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, attn_dim),
+            nn.ReLU(),
+            nn.Linear(attn_dim, state_dim * fragment_length)
+        )
+
+    def encode(self, x: th.Tensor):
+        """
+        x: (B, L, state_dim)
+        returns: z, mu, logvar
+        """
+        # a) project inputs up to attn_dim
+        h = self.input_proj(x)               # (B, L, attn_dim)
+
+        # b) self-attention
+        #    Query, Key, Value all = h
+        attn_out, _ = self.self_attn(h, h, h)
+        h2 = self.post_attn(attn_out)        # (B, L, attn_dim)
+
+        # c) pool over time
+        pooled = h2.mean(dim=1)              # (B, attn_dim)
+
+        # d) to latent stats
+        mu     = self.fc_mu(pooled)          # (B, latent_dim)
+        logvar = self.fc_logvar(pooled)      # (B, latent_dim)
+        std    = th.exp(0.5 * logvar)
+        eps    = th.randn_like(std)
+        z      = mu + eps * std              # (B, latent_dim)
+
+        return z, mu, logvar
+
+    def decode(self, z: th.Tensor):
+        """
+        z: (B, latent_dim)
+        returns x_hat: (B, L, state_dim)
+        """
+        B = z.size(0)
+        out = self.decoder(z)                                # (B, state_dim * L)
+        x_hat = out.view(B, self.fragment_length, self.state_dim)
+        return x_hat
+
+    def forward(self, x: th.Tensor):
+        z, mu, logvar = self.encode(x)
+        x_hat = self.decode(z)
+        return x_hat, mu, logvar
+
 class VAETrainer:
     def __init__(self,
-                 vae: GRUStateVAE,
+                 vae: AttnStateVAE,
                  lr: float = 1e-3,
                  weight_decay: float = 1e-4,
                  batch_size: int = 32,
@@ -435,7 +510,46 @@ class VAETrainer:
 
         kl_loss = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).sum(-1).mean()
 
-        total_loss = recon_loss + kl_weight_beta * kl_loss
+        # z = self.vae.reparameterize(mu, logvar, self.device)  # (B, latent_dim)
+        # z_prior = th.randn_like(z)  # sample p(z)
+        # mmd_loss = self.compute_mmd(z, z_prior)
+
+        total_loss = recon_loss + 1.0 * kl_loss # + 0.5 * mmd_loss
 
         return total_loss, recon_loss, kl_loss
+
+    def compute_mmd(self, z: th.Tensor, z_prior: th.Tensor, kernel_mul=2.0, kernel_num=5):
+        """
+        MMD with RBF-kernel mixture:
+          k(x,y) = sum_r exp(-||x-y||^2 / (2 σ_r^2))
+        where σ_r = σ0 * (kernel_mul**r), and σ0 is the median distance.
+        """
+        # 1) pairwise squared distances
+        xx = z @ z.t()
+        x2 = (z * z).sum(dim=1, keepdim=True)
+        pdist = x2 + x2.t() - 2 * xx
+
+        # 2) choose a bandwidth base (median heuristic)
+        with th.no_grad():
+            median = pdist.flatten()[pdist.numel() // 2]
+            base = median.clamp(min=1e-3)
+
+        # 3) build RBF kernels
+        kernels = 0
+        for i in range(kernel_num):
+            sigma = base * (kernel_mul ** i)
+            kernels += th.exp(-pdist / (2 * sigma))
+
+        # 4) MMD = E[k(z,z)] + E[k(z',z')] - 2E[k(z,z')]
+        m = z.size(0)
+        k_xx = kernels.mean()
+        yy = z_prior @ z_prior.t()
+        y2 = (z_prior * z_prior).sum(dim=1, keepdim=True)
+        pdist_y = y2 + y2.t() - 2 * yy
+        kernels_y = sum(th.exp(-pdist_y / (2 * base * (kernel_mul ** i)))
+                        for i in range(kernel_num))
+        k_yy = kernels_y.mean()
+        k_xy = (th.exp(-pdist / (2 * base))  # you could reuse `kernels` & pick one bandwidth
+                .mean())
+        return k_xx + k_yy - 2 * k_xy
         
