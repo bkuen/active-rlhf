@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import torch as th
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
@@ -171,6 +171,152 @@ class GRUStateVAE(nn.Module):
         x_hat = self.decode(z)
         return x_hat, mu, log_var
 
+class EnhancedGRUStateVAE(nn.Module):
+    """
+    Sequence‐aware VAE with input / output MLPs around a stacked GRU.
+    - Projects each raw state up to `embed_dim` before the GRU.
+    - Projects GRU outputs through an MLP before the final readout.
+    """
+
+    def __init__(
+        self,
+        state_dim: int,
+        latent_dim: int,
+        fragment_length: int,
+        hidden_dims: List[int] = [64],
+        embed_dim: Optional[int] = None,
+        dropout: float = 0.1,
+        device: str = "cuda" if th.cuda.is_available() else "cpu",
+    ):
+        super().__init__()
+        self.state_dim = state_dim
+        self.latent_dim = latent_dim
+        self.fragment_length = fragment_length
+        self.hidden_dims = hidden_dims
+        self.dropout = dropout
+        self.device = device
+
+        # If embed_dim not specified, default to last GRU hidden size
+        self.embed_dim = embed_dim or hidden_dims[-1]
+
+        # ── Input MLP ─────────────────────────────────────────────────────────
+        # Projects raw state_dim → embed_dim per timestep
+        self.input_proj = nn.Sequential(
+            nn.Linear(state_dim, self.embed_dim),
+            nn.ReLU(),
+            nn.LayerNorm(self.embed_dim),
+        )
+
+        # ── Encoder GRU ───────────────────────────────────────────────────────
+        enc_hidden = hidden_dims[-1]
+        self.encoder_rnn = nn.GRU(
+            input_size=self.embed_dim,
+            hidden_size=enc_hidden,
+            num_layers=len(hidden_dims),
+            batch_first=True,
+            dropout=dropout if len(hidden_dims) > 1 else 0.0,
+        )
+
+        # Latent projection heads
+        self.fc_mu     = nn.Linear(enc_hidden, latent_dim)
+        self.fc_logvar = nn.Linear(enc_hidden, latent_dim)
+
+        # ── Decoder GRU ───────────────────────────────────────────────────────
+        dec_hidden = hidden_dims[-1]
+        self.decoder_rnn = nn.GRU(
+            input_size=latent_dim,
+            hidden_size=dec_hidden,
+            num_layers=len(hidden_dims),
+            batch_first=True,
+            dropout=dropout if len(hidden_dims) > 1 else 0.0,
+        )
+
+        # ── Post‐RNN MLP ───────────────────────────────────────────────────────
+        # Projects GRU hidden → same size before final readout
+        self.post_rnn_proj = nn.Sequential(
+            nn.Linear(dec_hidden, dec_hidden),
+            nn.ReLU(),
+            nn.LayerNorm(dec_hidden),
+        )
+
+        # ── Output readout ────────────────────────────────────────────────────
+        # Projects to original state_dim, with tanh to match (-1,1) range
+        self.output_layer = nn.Sequential(
+            nn.Linear(dec_hidden, state_dim),
+            nn.Tanh(),
+        )
+
+        # Move everything to device
+        self.to(self.device)
+
+
+    @staticmethod
+    def reparameterize(mu: th.Tensor, log_var: th.Tensor) -> th.Tensor:
+        std = th.exp(0.5 * log_var)
+        eps = th.randn_like(std)
+        return mu + eps * std
+
+
+    def encode(self, x: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """
+        Encode a batch of fragments.
+        Args:
+            x: (B, L, state_dim)
+        Returns:
+            z      : (B, latent_dim)
+            mu     : (B, latent_dim)
+            log_var: (B, latent_dim)
+        """
+        x = x.to(self.device)                         # (B, L, D)
+        h_in = self.input_proj(x)                     # (B, L, embed_dim)
+        _, h_n = self.encoder_rnn(h_in)               # h_n: (num_layers, B, H)
+        h_last = h_n[-1]                              # (B, H)
+
+        mu      = self.fc_mu(h_last)                  # (B, latent_dim)
+        log_var = self.fc_logvar(h_last)              # (B, latent_dim)
+        z       = self.reparameterize(mu, log_var)    # (B, latent_dim)
+
+        return z, mu, log_var
+
+
+    def decode(self, z: th.Tensor) -> th.Tensor:
+        """
+        Decode latents back to state fragments.
+        Args:
+            z: (B, latent_dim)
+        Returns:
+            x_hat: (B, L, state_dim)
+        """
+        z = z.to(self.device)
+        B = z.size(0)
+
+        # Repeat latent at every timestep
+        z_seq = z.unsqueeze(1).repeat(1, self.fragment_length, 1)  # (B, L, latent_dim)
+
+        # Optionally add small noise to latent inputs (can help exploration)
+        z_seq = z_seq + th.randn_like(z_seq) * 0.05
+
+        dec_out, _ = self.decoder_rnn(z_seq)                       # (B, L, H)
+        h_dec = self.post_rnn_proj(dec_out)                        # (B, L, H)
+        x_hat = self.output_layer(h_dec)                           # (B, L, state_dim)
+
+        return x_hat
+
+
+    def forward(self, x: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """
+        Full VAE pass.
+        Args:
+            x: (B, L, state_dim)
+        Returns:
+            x_hat : (B, L, state_dim)
+            mu    : (B, latent_dim)
+            log_var: (B, latent_dim)
+        """
+        z, mu, log_var = self.encode(x)
+        x_hat = self.decode(z)
+        return x_hat, mu, log_var
+
 class StateVAE(nn.Module):
     def __init__(self, 
                  state_dim: int,
@@ -292,75 +438,138 @@ class StateVAE(nn.Module):
         x_hat = self.decode(z)
         return x_hat, mu, log_var
 
+class TransBlock(nn.Module):
+    """
+    Transformer encoder block: self‐attention + feed‐forward with residuals & layernorm.
+    """
+    def __init__(self, attn_dim: int, n_heads: int, ff_dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(
+            embed_dim=attn_dim,
+            num_heads=n_heads,
+            dropout=dropout,
+            batch_first=True
+        )
+        self.norm1 = nn.LayerNorm(attn_dim)
+        self.ff = nn.Sequential(
+            nn.Linear(attn_dim, ff_dim),
+            nn.ReLU(),
+            nn.Linear(ff_dim, attn_dim),
+        )
+        self.norm2 = nn.LayerNorm(attn_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        # x: (B, L, attn_dim)
+        attn_out, _ = self.attn(x, x, x)        # (B, L, attn_dim)
+        x = self.norm1(x + self.dropout(attn_out))
+        ff_out = self.ff(x)                     # (B, L, attn_dim)
+        x = self.norm2(x + self.dropout(ff_out))
+        return x
+
+
 class AttnStateVAE(nn.Module):
-    def __init__(self, state_dim, latent_dim, fragment_length,
-                 n_heads=4, attn_dim=128, device="cuda"):
+    def __init__(
+        self,
+        state_dim: int,
+        latent_dim: int,
+        fragment_length: int,
+        n_heads: int = 4,
+        n_blocks: int = 2,
+        attn_dim: int = 128,
+        attn_dropout: float = 0.1,
+        device: str = "cuda"
+    ):
         super().__init__()
         self.state_dim = state_dim
         self.latent_dim = latent_dim
         self.fragment_length = fragment_length
         self.device = device
 
-        # 1) A single self-attention layer
-        #    embed_dim=attn_dim must be divisible by n_heads
+        # 1) Input projection: state_dim → attn_dim
         self.input_proj = nn.Linear(state_dim, attn_dim)
-        self.self_attn = nn.MultiheadAttention(
-            embed_dim=attn_dim,
-            num_heads=n_heads,
-            batch_first=True
-        )
-        self.post_attn = nn.Sequential(
-            nn.Linear(attn_dim, attn_dim),
-            nn.ReLU()
+
+        # 2) Transformer blocks
+        self.blocks = nn.Sequential(
+            *[TransBlock(
+                attn_dim=attn_dim,
+                n_heads=n_heads,
+                ff_dim=attn_dim * 4,
+                dropout=attn_dropout,
+            ) for _ in range(n_blocks)]
         )
 
-        # 2) Latent projections
+        # 3) Latent projection heads
         self.fc_mu     = nn.Linear(attn_dim, latent_dim)
         self.fc_logvar = nn.Linear(attn_dim, latent_dim)
 
-        # 3) Simple decoder (just an MLP for demo)
+        # 4) Simple decoder MLP
         self.decoder = nn.Sequential(
             nn.Linear(latent_dim, attn_dim),
             nn.ReLU(),
             nn.Linear(attn_dim, state_dim * fragment_length)
         )
 
-    def encode(self, x: th.Tensor):
+        # Move everything to the target device
+        self.to(self.device)
+
+    def encode(self, x: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
-        x: (B, L, state_dim)
-        returns: z, mu, logvar
+        Encode a batch of state‐sequence fragments.
+
+        Args:
+            x: (B, L, state_dim)
+        Returns:
+            z      : (B, latent_dim)
+            mu     : (B, latent_dim)
+            logvar : (B, latent_dim)
         """
-        # a) project inputs up to attn_dim
-        h = self.input_proj(x)               # (B, L, attn_dim)
+        x = x.to(self.device)                         # (B, L, state_dim)
 
-        # b) self-attention
-        #    Query, Key, Value all = h
-        attn_out, _ = self.self_attn(h, h, h)
-        h2 = self.post_attn(attn_out)        # (B, L, attn_dim)
+        h = self.input_proj(x)                        # (B, L, attn_dim)
+        h = self.blocks(h)                            # (B, L, attn_dim)
 
-        # c) pool over time
-        pooled = h2.mean(dim=1)              # (B, attn_dim)
+        # Pool over the time axis
+        pooled = h.mean(dim=1)                        # (B, attn_dim)
 
-        # d) to latent stats
-        mu     = self.fc_mu(pooled)          # (B, latent_dim)
-        logvar = self.fc_logvar(pooled)      # (B, latent_dim)
-        std    = th.exp(0.5 * logvar)
-        eps    = th.randn_like(std)
-        z      = mu + eps * std              # (B, latent_dim)
+        # Project to Gaussian parameters
+        mu     = self.fc_mu(pooled)                   # (B, latent_dim)
+        logvar = self.fc_logvar(pooled)               # (B, latent_dim)
+
+        # Reparameterization trick
+        std = th.exp(0.5 * logvar)                    # (B, latent_dim)
+        eps = th.randn_like(std)                      # (B, latent_dim)
+        z = mu + eps * std                            # (B, latent_dim)
 
         return z, mu, logvar
 
-    def decode(self, z: th.Tensor):
+    def decode(self, z: th.Tensor) -> th.Tensor:
         """
-        z: (B, latent_dim)
-        returns x_hat: (B, L, state_dim)
+        Decode latents into reconstructed state‐sequence fragments.
+
+        Args:
+            z: (B, latent_dim)
+        Returns:
+            x_hat: (B, L, state_dim)
         """
+        z = z.to(self.device)
         B = z.size(0)
-        out = self.decoder(z)                                # (B, state_dim * L)
+
+        out = self.decoder(z)                         # (B, state_dim * L)
         x_hat = out.view(B, self.fragment_length, self.state_dim)
         return x_hat
 
-    def forward(self, x: th.Tensor):
+    def forward(self, x: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """
+        Full VAE forward pass.
+
+        Args:
+            x: (B, L, state_dim)
+        Returns:
+            x_hat : (B, L, state_dim)
+            mu    : (B, latent_dim)
+            logvar: (B, latent_dim)
+        """
         z, mu, logvar = self.encode(x)
         x_hat = self.decode(z)
         return x_hat, mu, logvar

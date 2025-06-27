@@ -41,7 +41,7 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --query-schedule="linear" \
   --total-queries=500 \
   --queries-per-session=10 \
-  --selector-type="random" \
+  --selector-type="variquery" \
   --sampling-strategy="uniform" \
   --oversampling-factor=10.0 \
   --fragment-length=50 \
@@ -49,10 +49,14 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --variquery-vae-lr=1e-3 \
   --variquery-vae-weight-decay=1e-4 \
   --variquery-vae-batch-size=32 \
-  --variquery-vae-num-epochs=100 \
+  --variquery-vae-num-epochs=200 \
+  --variquery-vae-kl-warmup-epochs=40 \
   --variquery-vae-dropout=0.1 \
   --variquery-vae-kl-weight=1.0 \
   --variquery-vae-hidden-dims 64 \
+  --variquery-vae-attention-dim=128 \
+  --variquery-vae-attention-heads=4 \
+  --variquery_vae_attention-blocks=2 \
   --duo-consensual-filter=False \
   --hybrid_dpp_gamma_z=1.0 \
   --hybrid_dpp_gamma_r=1.0 \

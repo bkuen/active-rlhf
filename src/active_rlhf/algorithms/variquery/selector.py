@@ -1,5 +1,5 @@
 from typing import List, Tuple
-from active_rlhf.algorithms.variquery.vae import StateVAE, VAETrainer, GRUStateVAE, AttnStateVAE
+from active_rlhf.algorithms.variquery.vae import StateVAE, VAETrainer, GRUStateVAE, AttnStateVAE, EnhancedGRUStateVAE
 from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
@@ -32,6 +32,9 @@ class VARIQuerySelector(Selector):
                  vae_num_epochs: int = 25,
                  vae_kl_weight: float = 1.0,
                  vae_kl_warmup_epochs: int = 40,
+                 vae_attn_dim: int = 128,
+                 vae_attn_heads: int = 4,
+                 vae_attn_blocks: int = 2,
                  device: str = "cuda" if th.cuda.is_available() else "cpu"
                  ):
         self.reward_ensemble = reward_ensemble
@@ -62,6 +65,10 @@ class VARIQuerySelector(Selector):
             fragment_length=self.fragment_length,
             # hidden_dims=vae_hidden_dims,
             # dropout=self.vae_dropout,
+            attn_dim=vae_attn_dim,
+            n_heads=vae_attn_heads,
+            n_blocks=vae_attn_blocks,
+            attn_dropout=vae_dropout,
             device=device,
         )
 
@@ -69,6 +76,7 @@ class VARIQuerySelector(Selector):
             vae=self.vae,
             lr=self.vae_lr,
             weight_decay=self.vae_weight_decay,
+            kl_warmup_epochs=self.vae_kl_warmup_epochs,
             batch_size=self.vae_batch_size,
             num_epochs=self.vae_num_epochs,
             device=self.device

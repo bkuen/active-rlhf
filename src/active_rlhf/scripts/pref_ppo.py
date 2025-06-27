@@ -145,6 +145,12 @@ class Args:
     """weight of the KL loss term in VAE training"""
     variquery_vae_kl_warmup_epochs: int = 40
     """number of epochs to warm up the KL loss term in VAE training"""
+    variquery_vae_attention_dim: int = 128
+    """dimension of the attention layer in the VAE"""
+    variquery_vae_attention_heads: int = 4
+    """number of attention heads in the VAE"""
+    variquery_vae_attention_blocks: int = 2
+    """number of attention blocks in the VAE"""
 
     # DUO specific arguments
     duo_consensual_filter: bool = False
@@ -316,6 +322,9 @@ if __name__ == "__main__":
                 vae_num_epochs=args.variquery_vae_num_epochs,
                 vae_kl_weight=args.variquery_vae_kl_weight,
                 vae_kl_warmup_epochs=args.variquery_vae_kl_warmup_epochs,
+                vae_attn_dim=args.variquery_vae_attention_dim,
+                vae_attn_heads=args.variquery_vae_attention_heads,
+                vae_attn_blocks=args.variquery_vae_attention_blocks,
                 device=device,
             )
         case "duo":
