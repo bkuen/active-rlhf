@@ -1,5 +1,5 @@
 from typing import List, Tuple
-from active_rlhf.algorithms.variquery.vae import StateVAE, VAETrainer
+from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer
 from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
@@ -47,10 +47,10 @@ class HybridV2Selector(Selector):
         self.visualizer = VAEVisualizer(writer=writer)
         self.random_selector = RandomSelector()
 
-    def select_pairs(self, batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
-        batch_size = batch.obs.shape[0]
-        vae = StateVAE(
-            state_dim=batch.obs.shape[2],
+    def select_pairs(self, train_batch: ReplayBufferBatch, val_batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
+        batch_size = train_batch.obs.shape[0]
+        vae = MLPStateVAE(
+            state_dim=train_batch.obs.shape[2],
             latent_dim=self.vae_latent_dim,
             fragment_length=self.fragment_length,
             hidden_dims=self.vae_hidden_dims,
@@ -67,10 +67,10 @@ class HybridV2Selector(Selector):
         )
 
         # Train VAE and encode states
-        metrics = vae_trainer.train(batch, global_step)
+        metrics = vae_trainer.train(train_batch, global_step)
 
         num_candidates = int(num_pairs * self.oversampling_factor)
-        candidates = self.random_selector.select_pairs(batch, num_pairs=num_candidates, global_step=global_step)
+        candidates = self.random_selector.select_pairs(train_batch, num_pairs=num_candidates, global_step=global_step)
 
         with th.no_grad():
             first_rews, second_rews, probs = self.preference_model(candidates.first_obs, candidates.first_acts,

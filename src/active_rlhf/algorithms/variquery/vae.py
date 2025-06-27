@@ -1,3 +1,4 @@
+import copy
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 import torch as th
@@ -21,6 +22,10 @@ class VAEMetrics:
     total_loss: float
     latent_stats: LatentStats
 
+@dataclass
+class VAETrainerMetrics:
+    train_metrics: List[VAEMetrics]
+    val_metrics: List[VAEMetrics]
 
 class ReplayBufferDataset(Dataset):
     def __init__(self, buffer_batch: ReplayBufferBatch):
@@ -146,8 +151,8 @@ class GRUStateVAE(nn.Module):
 
         # Use the latent vector as the *input token* at every timestep
         z_seq = z.unsqueeze(1).repeat(1, self.fragment_length, 1)  # (B, L, latent_dim)
-        noise = th.randn_like(z_seq) * 0.05
-        z_seq = z_seq + noise # Add some noise to the latent vector to encourage exploration
+        # noise = th.randn_like(z_seq) * 0.05
+        # z_seq = z_seq + noise # Add some noise to the latent vector to encourage exploration
         dec_out, _ = self.decoder_rnn(z_seq)                      # (B, L, H)
 
         x_hat = self.output_layer(dec_out)                        # (B, L, state_dim)
@@ -317,7 +322,7 @@ class EnhancedGRUStateVAE(nn.Module):
         x_hat = self.decode(z)
         return x_hat, mu, log_var
 
-class StateVAE(nn.Module):
+class MLPStateVAE(nn.Module):
     def __init__(self, 
                  state_dim: int,
                  latent_dim: int, 
@@ -438,137 +443,183 @@ class StateVAE(nn.Module):
         x_hat = self.decode(z)
         return x_hat, mu, log_var
 
+# ──────────────────────────────────────────────────────────────
+# Helper: a single Transformer encoder/decoder block
+# (identical layout for both encoder & decoder)
+# ──────────────────────────────────────────────────────────────
 class TransBlock(nn.Module):
-    """
-    Transformer encoder block: self‐attention + feed‐forward with residuals & layernorm.
-    """
-    def __init__(self, attn_dim: int, n_heads: int, ff_dim: int, dropout: float = 0.1):
+    def __init__(self, attn_dim: int, n_heads: int, ff_dim: int, dropout: float):
         super().__init__()
-        self.attn = nn.MultiheadAttention(
-            embed_dim=attn_dim,
-            num_heads=n_heads,
-            dropout=dropout,
-            batch_first=True
-        )
-        self.norm1 = nn.LayerNorm(attn_dim)
-        self.ff = nn.Sequential(
+        self.attn = nn.MultiheadAttention(attn_dim, n_heads, dropout=dropout, batch_first=True)
+        self.ff   = nn.Sequential(
             nn.Linear(attn_dim, ff_dim),
-            nn.ReLU(),
+            nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(ff_dim, attn_dim),
+            nn.Dropout(dropout),
         )
-        self.norm2 = nn.LayerNorm(attn_dim)
-        self.dropout = nn.Dropout(dropout)
+        self.ln1 = nn.LayerNorm(attn_dim)
+        self.ln2 = nn.LayerNorm(attn_dim)
 
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        # x: (B, L, attn_dim)
-        attn_out, _ = self.attn(x, x, x)        # (B, L, attn_dim)
-        x = self.norm1(x + self.dropout(attn_out))
-        ff_out = self.ff(x)                     # (B, L, attn_dim)
-        x = self.norm2(x + self.dropout(ff_out))
+    def forward(self, x, attn_mask=None, key_padding_mask=None):
+        # Multi-head self-attention
+        _y, _ = self.attn(
+            query=x, key=x, value=x,
+            attn_mask=attn_mask,
+            key_padding_mask=key_padding_mask,
+        )
+        x = x + _y
+        x = self.ln1(x)
+
+        # Feed-forward
+        _y = self.ff(x)
+        x = x + _y
+        x = self.ln2(x)
         return x
 
 
+# ──────────────────────────────────────────────────────────────
+# Main VAE
+# ──────────────────────────────────────────────────────────────
 class AttnStateVAE(nn.Module):
+    """
+    Bidirectional Transformer encoder + causal Transformer decoder VAE
+    for fixed-length trajectory fragments.
+    Interface identical to the stub you supplied.
+    """
     def __init__(
         self,
         state_dim: int,
         latent_dim: int,
         fragment_length: int,
         n_heads: int = 4,
-        n_blocks: int = 2,
+        n_blocks: int = 4,
+        n_decoder_layers: int = 2,
         attn_dim: int = 128,
         attn_dropout: float = 0.1,
-        device: str = "cuda"
+        device: str = "cuda",
     ):
         super().__init__()
-        self.state_dim = state_dim
-        self.latent_dim = latent_dim
+        self.state_dim       = state_dim
+        self.latent_dim      = latent_dim
         self.fragment_length = fragment_length
-        self.device = device
+        self.device          = device
+        self.seq_len_plus_cls = fragment_length + 1      # +1 for CLS pooling token
 
-        # 1) Input projection: state_dim → attn_dim
+        # 1) Input projection and learned positional embedding
         self.input_proj = nn.Linear(state_dim, attn_dim)
+        self.pos_emb    = nn.Parameter(th.zeros(1, self.seq_len_plus_cls, attn_dim))
+        nn.init.trunc_normal_(self.pos_emb, std=0.02)
 
-        # 2) Transformer blocks
-        self.blocks = nn.Sequential(
-            *[TransBlock(
-                attn_dim=attn_dim,
-                n_heads=n_heads,
-                ff_dim=attn_dim * 4,
-                dropout=attn_dropout,
-            ) for _ in range(n_blocks)]
+        # Dedicated CLS (attention-pooling) token
+        self.cls_token  = nn.Parameter(th.zeros(1, 1, attn_dim))
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
+
+        # 2) Bidirectional Transformer encoder
+        self.enc_blocks = nn.Sequential(
+            *[TransBlock(attn_dim, n_heads, ff_dim=attn_dim * 4, dropout=attn_dropout)
+              for _ in range(n_blocks)]
         )
 
         # 3) Latent projection heads
         self.fc_mu     = nn.Linear(attn_dim, latent_dim)
         self.fc_logvar = nn.Linear(attn_dim, latent_dim)
 
-        # 4) Simple decoder MLP
-        self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, attn_dim),
-            nn.ReLU(),
-            nn.Linear(attn_dim, state_dim * fragment_length)
+        # 4) Tiny **causal** Transformer decoder
+        self.dec_input = nn.Linear(latent_dim, attn_dim)
+        self.dec_blocks = nn.ModuleList(
+            [TransBlock(attn_dim, n_heads, ff_dim=attn_dim * 4, dropout=attn_dropout)
+             for _ in range(2)]
         )
+        self.dec_ln  = nn.LayerNorm(attn_dim)
+        self.dec_out = nn.Linear(attn_dim, state_dim)
 
-        # Move everything to the target device
-        self.to(self.device)
+        # Prepare causal mask once (L × L, bool)
+        causal_mask = th.triu(th.ones(fragment_length, fragment_length, dtype=th.bool), diagonal=1)
+        self.register_buffer("causal_mask", causal_mask, persistent=False)
 
+        self.to(device)
+
+
+    # ─────────── Encoder ───────────
     def encode(self, x: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
-        Encode a batch of state‐sequence fragments.
-
-        Args:
-            x: (B, L, state_dim)
-        Returns:
-            z      : (B, latent_dim)
-            mu     : (B, latent_dim)
-            logvar : (B, latent_dim)
+        Args
+        ----
+        x : (B, L, state_dim)
+        Returns
+        -------
+        z      : (B, latent_dim)
+        mu     : (B, latent_dim)
+        logvar : (B, latent_dim)
         """
-        x = x.to(self.device)                         # (B, L, state_dim)
+        x = x.to(self.device)                                  # (B, L, D)
+        B = x.size(0)
 
-        h = self.input_proj(x)                        # (B, L, attn_dim)
-        h = self.blocks(h)                            # (B, L, attn_dim)
+        # (1) project
+        h = self.input_proj(x)                                 # (B, L, attn_dim)
 
-        # Pool over the time axis
-        pooled = h.mean(dim=1)                        # (B, attn_dim)
+        # (2) prepend CLS token and add positional enc.
+        cls = self.cls_token.expand(B, -1, -1)                 # (B, 1, attn_dim)
+        h = th.cat([cls, h], dim=1)                            # (B, L+1, attn_dim)
+        h = h + self.pos_emb[:, : self.seq_len_plus_cls, :]    # broadcast
 
-        # Project to Gaussian parameters
-        mu     = self.fc_mu(pooled)                   # (B, latent_dim)
-        logvar = self.fc_logvar(pooled)               # (B, latent_dim)
+        # (3) bidirectional attention
+        h = self.enc_blocks(h)                                 # (B, L+1, attn_dim)
 
-        # Reparameterization trick
-        std = th.exp(0.5 * logvar)                    # (B, latent_dim)
-        eps = th.randn_like(std)                      # (B, latent_dim)
-        z = mu + eps * std                            # (B, latent_dim)
+        # (4) take CLS vector
+        pooled = h[:, 0]                                       # (B, attn_dim)
+
+        mu     = self.fc_mu(pooled)                            # (B, z)
+        logvar = self.fc_logvar(pooled)                        # (B, z)
+
+        std = th.exp(0.5 * logvar)
+        eps = th.randn_like(std)
+        z = mu + eps * std                                     # reparameterise
 
         return z, mu, logvar
 
+
+    # ─────────── Decoder ───────────
     def decode(self, z: th.Tensor) -> th.Tensor:
         """
-        Decode latents into reconstructed state‐sequence fragments.
-
-        Args:
-            z: (B, latent_dim)
-        Returns:
-            x_hat: (B, L, state_dim)
+        Args
+        ----
+        z : (B, latent_dim)
+        Returns
+        -------
+        x_hat : (B, L, state_dim)
         """
         z = z.to(self.device)
         B = z.size(0)
 
-        out = self.decoder(z)                         # (B, state_dim * L)
-        x_hat = out.view(B, self.fragment_length, self.state_dim)
+        # Repeat latent for each time-step and project
+        h = self.dec_input(z).unsqueeze(1)                     # (B, 1, attn_dim)
+        h = h.repeat(1, self.fragment_length, 1)               # (B, L, attn_dim)
+
+        # Positional encoding reuse (skip CLS slot)
+        h = h + self.pos_emb[:, 1:self.fragment_length + 1, :]
+
+        # Causal self-attention
+        for blk in self.dec_blocks:
+            h = blk(h, attn_mask=self.causal_mask)     # (B, L, attn_dim)
+
+        h = self.dec_ln(h)
+        x_hat = self.dec_out(h)                                # (B, L, state_dim)
         return x_hat
 
+
+    # ─────────── VAE forward ───────────
     def forward(self, x: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
-        Full VAE forward pass.
-
-        Args:
-            x: (B, L, state_dim)
-        Returns:
-            x_hat : (B, L, state_dim)
-            mu    : (B, latent_dim)
-            logvar: (B, latent_dim)
+        Args
+        ----
+        x : (B, L, state_dim)
+        Returns
+        -------
+        x_hat : (B, L, state_dim)
+        mu    : (B, latent_dim)
+        logvar: (B, latent_dim)
         """
         z, mu, logvar = self.encode(x)
         x_hat = self.decode(z)
@@ -583,74 +634,92 @@ class VAETrainer:
                  num_epochs: int = 25,
                  kl_weight_beta: float = 1.0,
                  kl_warmup_epochs: int = 40,
+                 kl_warmup_steps: int = 320_000,
+                 total_steps: int = 1_000_000,
+                 early_stopping_patience: Optional[int] = None,
                  device: str = "cuda" if th.cuda.is_available() else "cpu"):
         self.vae = vae
         self.device = device
-        self.optimizer = th.optim.Adam(self.vae.parameters(), lr=lr, weight_decay=weight_decay)
+        self.optimizer = th.optim.AdamW(self.vae.parameters(), lr=lr, weight_decay=weight_decay)
         self.batch_size = batch_size
         self.num_epochs = num_epochs
         self.kl_warmup_epochs = kl_warmup_epochs
+        self.kl_warmup_steps = kl_warmup_steps
         self.kl_weight_beta = kl_weight_beta
+        self.total_steps = total_steps
+        self.early_stopping_patience = early_stopping_patience,
 
-    def train(self, 
-              buffer_batch: ReplayBufferBatch, 
-              global_step: int) -> List[VAEMetrics]:
+    def train(self,
+              train_batch: ReplayBufferBatch,
+              val_batch: ReplayBufferBatch,
+              global_step: int) -> VAETrainerMetrics:
         """Train the VAE on a batch of trajectories.
         
         Args:
-            buffer_batch: ReplayBufferBatch
+            train_batch: ReplayBufferBatch
             global_step: int
 
         Returns:
             List of VAEMetrics for each epoch
         """
-        dataset = ReplayBufferDataset(buffer_batch)
-        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+        train_dataset = ReplayBufferDataset(train_batch)
+        train_dataloader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
 
-        epoch_metrics = []
+        val_dataset = ReplayBufferDataset(val_batch)
+        val_dataloader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
 
-        self.vae.train()
+        train_metrics = []
+        val_metrics = []
+
+        best_val_loss = float('inf')
+        epochs_no_improve = 0
+        best_state = copy.deepcopy(self.vae.state_dict())
+
+        kl_weight_beta = self._get_current_kl_weight(global_step)
+
         for epoch in tqdm(range(self.num_epochs), desc="Training VAE"):
-            epoch_total_loss = 0.0
-            epoch_recon_loss = 0.0
-            epoch_kl_loss = 0.0
-            all_mu = []
-            all_logvar = []
+            # kl_weight_beta = self._get_kl_weight(epoch)
 
-            for batch in dataloader:
+            # Training
+            self.vae.train()
+
+            train_total_loss, train_recon_loss, train_kl_loss = 0.0, 0.0, 0.0
+            train_all_mu, train_all_logvar = [], []
+
+            for batch in train_dataloader:
                 x = batch['obs'].to(self.device)
 
                 # Forward pass
                 x_hat, mu, log_var = self.vae(x)
 
                 # Compute losses
-                kl_weight_beta = self._get_kl_weight(epoch)
                 total_loss, recon_loss, kl_loss = self._loss(x, x_hat, mu, log_var, kl_weight_beta=kl_weight_beta)
 
                 # Backward pass
                 self.optimizer.zero_grad()
                 total_loss.backward()
+                nn.utils.clip_grad_norm_(self.vae.parameters(), max_norm=1.0)
                 self.optimizer.step()
 
                 # Accumulate losses
-                epoch_total_loss += total_loss.item()
-                epoch_recon_loss += recon_loss.item()
-                epoch_kl_loss += kl_loss.item()
-                all_mu.append(mu.detach().cpu())
-                all_logvar.append(log_var.detach().cpu())
+                train_total_loss += total_loss.item()
+                train_recon_loss += recon_loss.item()
+                train_kl_loss += kl_loss.item()
+                train_all_mu.append(mu.detach().cpu())
+                train_all_logvar.append(log_var.detach().cpu())
 
-            mu = th.cat(all_mu, dim=0)
-            logvar = th.cat(all_logvar, dim=0)
+            mu = th.cat(train_all_mu, dim=0)
+            logvar = th.cat(train_all_logvar, dim=0)
 
             sigma = th.exp(0.5 * logvar)
             kl_per_dim = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
 
             # Average losses over batches
-            num_batches = len(dataloader)
-            epoch_metrics.append(VAEMetrics(
-                recon_loss=epoch_recon_loss / num_batches,
-                kl_loss=epoch_kl_loss / num_batches,
-                total_loss=epoch_total_loss / num_batches,
+            num_batches = len(train_dataloader)
+            train_metrics.append(VAEMetrics(
+                recon_loss=train_recon_loss / num_batches,
+                kl_loss=train_kl_loss / num_batches,
+                total_loss=train_total_loss / num_batches,
                 latent_stats=LatentStats(
                     mu=mu.mean(dim=0),
                     sigma=sigma.mean(dim=0),
@@ -658,7 +727,70 @@ class VAETrainer:
                 )
             ))
 
-        return epoch_metrics
+            # Validation
+            self.vae.eval()
+
+            val_total_loss, val_recon_loss, val_kl_loss = 0.0, 0.0, 0.0
+            val_all_mu, val_all_logvar = [], []
+
+            for batch in val_dataloader:
+                x = batch['obs'].to(self.device)
+
+                # Forward pass
+                with th.no_grad():
+                    x_hat, mu, log_var = self.vae(x)
+
+                # Compute losses
+                total_loss, recon_loss, kl_loss = self._loss(x, x_hat, mu, log_var, kl_weight_beta=kl_weight_beta)
+
+                # Accumulate losses
+                val_total_loss += total_loss.item()
+                val_recon_loss += recon_loss.item()
+                val_kl_loss += kl_loss.item()
+                val_all_mu.append(mu.detach().cpu())
+                val_all_logvar.append(log_var.detach().cpu())
+
+            mu = th.cat(val_all_mu, dim=0)
+            logvar = th.cat(val_all_logvar, dim=0)
+
+            sigma = th.exp(0.5 * logvar)
+            kl_per_dim = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
+
+            # Average losses over batches
+            num_batches = len(val_dataloader)
+            val_metrics.append(VAEMetrics(
+                recon_loss=val_recon_loss / num_batches,
+                kl_loss=val_kl_loss / num_batches,
+                total_loss=val_total_loss / num_batches,
+                latent_stats=LatentStats(mu=mu.mean(dim=0), sigma=sigma.mean(dim=0), kl_per_dim=kl_per_dim.mean(dim=0))
+            ))
+
+            # Early stopping check
+            if self.early_stopping_patience is not None:
+                if isinstance(self.early_stopping_patience, tuple):
+                    early_stopping_patience = self.early_stopping_patience[0]
+                else:
+                    early_stopping_patience = self.early_stopping_patience
+
+                current_val = val_metrics[-1].total_loss
+                if current_val < best_val_loss:
+                    best_val_loss = current_val
+                    epochs_no_improve = 0
+                    best_state = copy.deepcopy(self.vae.state_dict())
+                else:
+                    epochs_no_improve += 1
+                    if epochs_no_improve >= early_stopping_patience:
+                        print(f"[EarlyStopping] stopping at epoch {epoch}")
+                        break
+
+        if self.early_stopping_patience is not None:
+            # Restore best model state
+            self.vae.load_state_dict(best_state)
+
+        return VAETrainerMetrics(train_metrics=train_metrics, val_metrics=val_metrics)
+
+    def _get_current_kl_weight(self, global_step: int) -> float:
+        return self.kl_weight_beta * min(1.0, global_step / self.total_steps)
 
     def _get_kl_weight(self, epoch: int) -> float:
         """Compute the current KL weight based on linear warmup.
@@ -675,24 +807,6 @@ class VAETrainer:
         # Linear warmup: β = min(1.0, epoch / N_warmup) * β_target
         progress = epoch / self.kl_warmup_epochs
         return min(1.0, progress) * self.kl_weight_beta
-
-    def _get_kl_weight_cyclic(self, epoch: int) -> float:
-        """Compute the current KL weight using cyclic annealing.
-
-        Args:
-            epoch: Current epoch number
-
-        Returns:
-            Current KL weight to use in the loss function
-        """
-        cycle_length = self.kl_warmup_epochs  # One full cycle = warmup_epochs
-        cycle_progress = (epoch % cycle_length) / cycle_length  # 0 to 1 within each cycle
-
-        # Optional: change shape of the cycle — linear ramp up, cosine, etc.
-        beta = self.kl_weight_beta * cycle_progress  # Linear ramp
-        # beta = self.kl_weight_beta * (1 - math.cos(math.pi * cycle_progress)) / 2  # Cosine ramp
-
-        return beta
 
     def _loss(self, 
               x: th.Tensor, 

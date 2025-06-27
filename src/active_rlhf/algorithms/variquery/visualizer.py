@@ -8,7 +8,7 @@ from typing import List
 from torch.utils.tensorboard import SummaryWriter
 from matplotlib.patches import ConnectionPatch
 
-from active_rlhf.algorithms.variquery.vae import VAEMetrics
+from active_rlhf.algorithms.variquery.vae import VAEMetrics, VAETrainerMetrics
 
 class VAEVisualizer:
     def __init__(self, writer: SummaryWriter):
@@ -19,24 +19,32 @@ class VAEVisualizer:
         """
         self.writer = writer
 
-    def plot_metrics(self, metrics: List[VAEMetrics], global_step: int):
+    def plot_metrics(self, metrics: VAETrainerMetrics, global_step: int):
         """Plot and save training metrics.
         
         Args:
-            metrics: List of VAEMetrics for each epoch
+            metrics: Training and validation metrics
             global_step: Current training step for file naming
         """
         # Extract metrics
-        epochs = range(len(metrics))
-        recon_losses = [m.recon_loss for m in metrics]
-        kl_losses = [m.kl_loss for m in metrics]
-        total_losses = [m.total_loss for m in metrics]
+        epochs = range(len(metrics.train_metrics))
+        train_recon_losses = [m.recon_loss for m in metrics.train_metrics]
+        train_kl_losses = [m.kl_loss for m in metrics.train_metrics]
+        train_total_losses = [m.total_loss for m in metrics.train_metrics]
+
+        val_recon_losses = [m.recon_loss for m in metrics.val_metrics]
+        val_kl_losses = [m.kl_loss for m in metrics.val_metrics]
+        val_total_losses = [m.total_loss for m in metrics.val_metrics]
 
         # Create figure
         plt.figure(figsize=(10, 6))
-        plt.plot(epochs, recon_losses, label='Reconstruction Loss')
-        plt.plot(epochs, kl_losses, label='KL Loss')
-        plt.plot(epochs, total_losses, label='Total Loss')
+        plt.plot(epochs, train_recon_losses, label='Training Reconstruction Loss')
+        plt.plot(epochs, train_kl_losses, label='Training KL Loss')
+        plt.plot(epochs, train_total_losses, label='Training Total Loss')
+
+        plt.plot(epochs, val_recon_losses, label='Validation Reconstruction Loss', linestyle='--')
+        plt.plot(epochs, val_kl_losses, label='Validation KL Loss', linestyle='--')
+        plt.plot(epochs, val_total_losses, label='Validation Total Loss', linestyle='--')
         
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
@@ -267,7 +275,7 @@ class VAEVisualizer:
         plt.close()
 
     def visualize(self,
-                  metrics: List[VAEMetrics],
+                  metrics: VAETrainerMetrics,
                   latents: th.Tensor,
                   rewards: th.Tensor,
                   clusters: List[List[int]],
@@ -286,7 +294,7 @@ class VAEVisualizer:
             global_step: Current training step for file naming
         """
         self.plot_metrics(metrics, global_step)
-        self.plot_latent_heatmap(metrics, global_step)
+        self.plot_latent_heatmap(metrics.train_metrics, global_step)
         self.plot_latent_clusters(
             latents=latents,
             clusters=clusters,

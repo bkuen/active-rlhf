@@ -1,5 +1,5 @@
 from typing import List
-from active_rlhf.algorithms.variquery.vae import StateVAE, VAETrainer
+from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer
 from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 from active_rlhf.data.buffers import ReplayBufferBatch, TrajectoryPairBatch
 import torch as th
@@ -46,7 +46,7 @@ class HybridSelector(Selector):
         self.random_selector = RandomSelector()
         self.visualizer = VAEVisualizer(writer=writer)
 
-    def select_pairs(self, batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
+    def select_pairs(self, train_batch: ReplayBufferBatch, val_batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
         """
         Selects a batch of trajectory pairs from the replay buffer using a greedy DPP.
         First selects a larger random subset, then applies DPP selection on that subset.
@@ -55,10 +55,10 @@ class HybridSelector(Selector):
         """
         # First, use random selector to get a larger subset
         batch_size = int(num_pairs * self.oversampling_factor)
-        candidate_pairs = self.random_selector.select_pairs(batch, num_pairs=batch_size, global_step=global_step)
+        candidate_pairs = self.random_selector.select_pairs(train_batch, num_pairs=batch_size, global_step=global_step)
 
-        vae = StateVAE(
-            state_dim=batch.obs.shape[2],
+        vae = MLPStateVAE(
+            state_dim=train_batch.obs.shape[2],
             latent_dim=self.vae_latent_dim,
             fragment_length=self.fragment_length,
             hidden_dims=self.vae_hidden_dims,
@@ -74,7 +74,7 @@ class HybridSelector(Selector):
             device=self.device
         )
 
-        metrics = vae_trainer.train(batch, global_step)
+        metrics = vae_trainer.train(train_batch, global_step)
 
         # Encode trajectories with VAE and predict rewards
         with th.no_grad():

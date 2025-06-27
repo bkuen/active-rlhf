@@ -1,12 +1,12 @@
 poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
-  --exp-name="pref_ppo_random_v6_sample2" \
+  --exp-name="pref_ppo_variquery" \
   --seed=1 \
   --torch-deterministic=True \
   --cuda=True \
   --track=True \
   --wandb-project-name="active-rlhf-tests" \
   --wandb-entity="bkuen-ludwig-maximilianuniversity-of-munich" \
-  --wandb-tags "random_v6" \
+  --wandb-tags "variquery_v1" \
   --capture-video=False \
   --save-model=True \
   --upload-model=False \
@@ -46,17 +46,20 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --oversampling-factor=10.0 \
   --fragment-length=50 \
   --variquery-vae-latent-dim=32 \
-  --variquery-vae-lr=1e-3 \
+  --variquery-vae-lr=3e-4 \
   --variquery-vae-weight-decay=1e-4 \
-  --variquery-vae-batch-size=32 \
-  --variquery-vae-num-epochs=200 \
+  --variquery-vae-batch-size=64 \
+  --variquery-vae-num-epochs=100 \
   --variquery-vae-kl-warmup-epochs=40 \
+  --variquery_vae_kl_warmup_steps=320_000 \
+  --variquery_vae_early_stopping_patience=20 \
   --variquery-vae-dropout=0.1 \
   --variquery-vae-kl-weight=1.0 \
-  --variquery-vae-hidden-dims 64 \
+  --variquery-vae-hidden-dims 128 64 32 \
   --variquery-vae-attention-dim=128 \
   --variquery-vae-attention-heads=4 \
-  --variquery_vae_attention-blocks=2 \
+  --variquery_vae-attention-blocks=4 \
+  --variquery-vae-decoder-layers=2 \
   --duo-consensual-filter=False \
   --hybrid_dpp_gamma_z=1.0 \
   --hybrid_dpp_gamma_r=1.0 \

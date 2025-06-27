@@ -25,9 +25,9 @@ class DUOSelector(Selector):
 
     self.random_selector = RandomSelector()
 
-  def select_pairs(self, batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
+  def select_pairs(self, train_batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
     num_candidates = int(num_pairs * self.oversampling_factor)
-    candidates = self.random_selector.select_pairs(batch, num_pairs=num_candidates, global_step=global_step)
+    candidates = self.random_selector.select_pairs(train_batch, num_pairs=num_candidates, global_step=global_step)
     origin_candidate_len = len(candidates)
 
     print("Candidates before filtering:", origin_candidate_len)

@@ -3,7 +3,7 @@ import os
 import random
 import time
 from dataclasses import dataclass, field
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 from active_rlhf.algorithms.duo.selector import DUOSelector
 from active_rlhf.algorithms.hybrid.selector import HybridSelector
@@ -21,7 +21,7 @@ from active_rlhf.data.dataset import PreferenceDataset
 from active_rlhf.data.running_stats import RunningStat
 from active_rlhf.rewards.reward_nets import PreferenceModel, RewardEnsemble, RewardTrainer
 from active_rlhf.queries.selector import RandomSelector, RandomSelectorSimple
-from active_rlhf.algorithms.variquery.vae import StateVAE, VAETrainer
+from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer
 from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 
 
@@ -145,12 +145,18 @@ class Args:
     """weight of the KL loss term in VAE training"""
     variquery_vae_kl_warmup_epochs: int = 40
     """number of epochs to warm up the KL loss term in VAE training"""
+    variquery_vae_kl_warmup_steps: int = 320_000
+    """number of steps to warm up the KL loss term in VAE training (as an alternative to epochs)"""
+    variquery_vae_early_stopping_patience: Optional[int] = None
+    """number of epochs to wait for early stopping in VAE training, None means no early stopping"""
     variquery_vae_attention_dim: int = 128
     """dimension of the attention layer in the VAE"""
     variquery_vae_attention_heads: int = 4
     """number of attention heads in the VAE"""
     variquery_vae_attention_blocks: int = 2
     """number of attention blocks in the VAE"""
+    variquery_vae_decoder_layers: int = 2
+    """number of layers in the VAE decoder"""
 
     # DUO specific arguments
     duo_consensual_filter: bool = False
@@ -322,9 +328,13 @@ if __name__ == "__main__":
                 vae_num_epochs=args.variquery_vae_num_epochs,
                 vae_kl_weight=args.variquery_vae_kl_weight,
                 vae_kl_warmup_epochs=args.variquery_vae_kl_warmup_epochs,
+                vae_kl_warmup_steps=args.variquery_vae_kl_warmup_steps,
+                vae_early_stopping_patience=args.variquery_vae_early_stopping_patience,
                 vae_attn_dim=args.variquery_vae_attention_dim,
                 vae_attn_heads=args.variquery_vae_attention_heads,
                 vae_attn_blocks=args.variquery_vae_attention_blocks,
+                vae_decoder_layers=args.variquery_vae_decoder_layers,
+                total_steps=args.total_timesteps,
                 device=device,
             )
         case "duo":
@@ -404,13 +414,18 @@ if __name__ == "__main__":
 
     next_query_step = 0
 
+    # One additional rollout to ensure validation set inside the replay buffer is not empty
+    rollout_sample, _ = agent_trainer.collect_rollout(global_step, args.num_steps)
+    replay_buffer.add_rollout(rollout_sample, split="val")
+
     for iteration in range(1, args.num_iterations + 1):
         # Annealing the rate if instructed to do so.
         agent_trainer.update_learning_rate(iteration)
 
         # Collect rollout
         rollout_sample, episode_infos = agent_trainer.collect_rollout(global_step, args.num_steps)
-        replay_buffer.add_rollout(rollout_sample)
+        # With 0.1 probability, we put the rollout into the validation set
+        replay_buffer.add_rollout(rollout_sample, split='val' if random.random() < 0.1 else "train")
 
         # Update policy
         metrics = agent_trainer.update_policy(rollout_sample=rollout_sample, num_steps=args.num_steps, global_step=global_step)
@@ -423,16 +438,19 @@ if __name__ == "__main__":
             num_pairs = args.queries_per_session if next_query_step != 0 else 32
 
             if args.sampling_strategy == "uniform":
-                reward_samples = replay_buffer.sample2(int(num_pairs*args.oversampling_factor))
+                train_samples = replay_buffer.sample2(int(num_pairs * args.oversampling_factor))
+                replay_buffer.log_trajectory_statistics(writer, global_step)
             elif args.sampling_strategy == "priority":
                 replay_buffer.update_on_policiness_scores(agent)
                 replay_buffer.log_trajectory_statistics(writer, global_step)
-                reward_samples = replay_buffer.sample_by_on_policiness(int(num_pairs*args.oversampling_factor), agent)
+                train_samples = replay_buffer.sample_by_on_policiness(int(num_pairs * args.oversampling_factor), agent)
             else:
                 raise ValueError(f"Unknown sampling strategy: {args.sampling_strategy}")
 
+            val_samples = replay_buffer.sample2(int(num_pairs * args.oversampling_factor), split="val")
+
             # Use selector to get trajectory pairs
-            trajectory_pairs = selector.select_pairs(reward_samples, num_pairs=num_pairs, global_step=global_step)
+            trajectory_pairs = selector.select_pairs(train_samples, val_samples, num_pairs=num_pairs, global_step=global_step)
             assert len(trajectory_pairs) == num_pairs
 
             # Calculate preferences based on returns

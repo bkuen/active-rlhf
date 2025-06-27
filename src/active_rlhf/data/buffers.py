@@ -390,6 +390,8 @@ class ReplayBuffer:
         
         return {
             'num_trajectories': len(self.trajectories),
+            'num_train_trajectories': len([t for t in self.trajectories if t.split == 'train']),
+            'num_val_trajectories': len([t for t in self.trajectories if t.split == 'val']),
             'mean_length': np.mean(lengths),
             'mean_on_policiness_score': np.mean(scores),
             'std_on_policiness_score': np.std(scores),
@@ -402,6 +404,8 @@ class ReplayBuffer:
         stats = self.get_trajectory_statistics()
         
         writer.add_scalar("replay_buffer/num_trajectories", stats['num_trajectories'], global_step)
+        writer.add_scalar("replay_buffer/num_train_trajectories", stats['num_train_trajectories'], global_step)
+        writer.add_scalar("replay_buffer/num_val_trajectories", stats['num_val_trajectories'], global_step)
         writer.add_scalar("replay_buffer/mean_trajectory_length", stats['mean_length'], global_step)
         writer.add_scalar("replay_buffer/mean_on_policiness_score", stats['mean_on_policiness_score'], global_step)
         writer.add_scalar("replay_buffer/std_on_policiness_score", stats['std_on_policiness_score'], global_step)
