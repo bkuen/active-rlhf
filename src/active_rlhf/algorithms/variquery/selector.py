@@ -41,6 +41,7 @@ class VARIQuerySelector(Selector):
                  total_steps: int = 1_000_000,
                  device: str = "cuda" if th.cuda.is_available() else "cpu"
                  ):
+        self.writer = writer
         self.reward_ensemble = reward_ensemble
         self.reward_norm = reward_norm
         self.fragment_length = fragment_length
@@ -72,19 +73,19 @@ class VARIQuerySelector(Selector):
             dropout=self.vae_dropout,
         )
 
-        self.vae = AttnStateVAE(
-            state_dim=vae_state_dim,
-            latent_dim=self.vae_latent_dim,
-            fragment_length=self.fragment_length,
-            # hidden_dims=vae_hidden_dims,
-            # dropout=self.vae_dropout,
-            attn_dim=vae_attn_dim,
-            n_heads=vae_attn_heads,
-            n_blocks=vae_attn_blocks,
-            n_decoder_layers=vae_decoder_layers,
-            attn_dropout=vae_dropout,
-            device=device,
-        )
+        # self.vae = AttnStateVAE(
+        #     state_dim=vae_state_dim,
+        #     latent_dim=self.vae_latent_dim,
+        #     fragment_length=self.fragment_length,
+        #     # hidden_dims=vae_hidden_dims,
+        #     # dropout=self.vae_dropout,
+        #     attn_dim=vae_attn_dim,
+        #     n_heads=vae_attn_heads,
+        #     n_blocks=vae_attn_blocks,
+        #     n_decoder_layers=vae_decoder_layers,
+        #     attn_dropout=vae_dropout,
+        #     device=device,
+        # )
 
         self.vae_trainer = VAETrainer(
             vae=self.vae,
@@ -130,7 +131,7 @@ class VARIQuerySelector(Selector):
             latent_states, _, _ = self.vae.encode(train_batch.obs)
 
         # Step 3: Cluster and sample pairs
-        clusters = self._cluster_latent_space(latent_states=latent_states, num_clusters=num_pairs)
+        clusters = self._cluster_latent_space(latent_states=latent_states, num_clusters=num_pairs, global_step=global_step)
 
         # Step 4: Sample pairs
         first_indices, second_indices = self._sample_random_pair_indices(clusters=clusters, num_pairs=batch_size//2)
@@ -168,9 +169,8 @@ class VARIQuerySelector(Selector):
             second_rews=train_batch.rews[top_second_indices],
             second_dones=train_batch.dones[top_second_indices]
         )
-    
-    @staticmethod
-    def _cluster_latent_space(latent_states: th.Tensor, num_clusters: int) -> List[List[int]]:
+
+    def _cluster_latent_space(self, latent_states: th.Tensor, num_clusters: int, global_step: int) -> List[List[int]]:
         latent_states = latent_states.detach().cpu().numpy()
 
         # Standardize the latent states
@@ -186,8 +186,8 @@ class VARIQuerySelector(Selector):
         cluster_labels = kmeans.fit_predict(latent_states)
         
         # Calculate silhouette score to evaluate clustering quality
-        # if len(latent_states) > 1:
-        #     score = silhouette_score(latent_states, cluster_labels)
+        score = silhouette_score(latent_states, cluster_labels)
+        self.writer.add_scalar("variquery/silhouette_score", score, global_step=global_step)
         
         # Group indices by cluster
         clusters = [[] for _ in range(num_clusters)]

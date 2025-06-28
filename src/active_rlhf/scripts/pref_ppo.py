@@ -111,6 +111,8 @@ class Args:
     """the dropout rate of the reward network"""
     reward_net_val_split: float = 0.2
     """the validation split ratio for the reward network training data"""
+    preference_equality_threshold: float = 50.0
+    """the threshold for considering two rewards equal when computing preferences"""
     query_schedule: str = "linear"
     """the schedule for querying the reward network"""
     total_queries: int = 400
@@ -255,6 +257,7 @@ if __name__ == "__main__":
     replay_buffer = ReplayBuffer(
         capacity=args.replay_buffer_capacity,
         envs=envs,
+        fragment_length=args.fragment_length,
         device=device,
     )
     
@@ -366,6 +369,7 @@ if __name__ == "__main__":
             selector = HybridV2Selector(
                 writer=writer,
                 preference_model=preference_model,
+                vae_state_dim=envs.single_observation_space.shape[0],
                 fragment_length=args.fragment_length,
                 vae_latent_dim=args.variquery_vae_latent_dim,
                 vae_hidden_dims=args.variquery_vae_hidden_dims,
@@ -374,6 +378,10 @@ if __name__ == "__main__":
                 vae_dropout=args.variquery_vae_dropout,
                 vae_batch_size=args.variquery_vae_batch_size,
                 vae_num_epochs=args.variquery_vae_num_epochs,
+                vae_kl_weight=args.variquery_vae_kl_weight,
+                vae_kl_warmup_epochs=args.variquery_vae_kl_warmup_epochs,
+                vae_kl_warmup_steps=args.variquery_vae_kl_warmup_steps,
+                vae_early_stopping_patience=args.variquery_vae_early_stopping_patience,
                 oversampling_factor=args.oversampling_factor,
                 device=device,
             )
@@ -458,11 +466,49 @@ if __name__ == "__main__":
             second_returns = trajectory_pairs.second_rews.squeeze().sum(dim=-1)
             
             # Create preference tensor where [1,0] means first is preferred
-            prefs = th.stack(
-                [(first_returns > second_returns).float(),
-                 (second_returns >= first_returns).float()],
-                dim=1,
-            ).to(device)
+            return_deltas = th.abs(first_returns - second_returns)
+            log_deltas = np.log1p(return_deltas.cpu().numpy())
+            threshold = np.quantile(log_deltas, 0.2)
+            threshold = np.expm1(threshold)
+            threshold = max(threshold, 0.1)
+            equal_mask = return_deltas < threshold
+
+            prefs = th.zeros(len(first_returns), 2).to(device)
+            prefs[equal_mask] = 0.5  # equally preferred
+            prefs[~equal_mask, 0] = (first_returns[~equal_mask] > second_returns[~equal_mask]).float()
+            prefs[~equal_mask, 1] = 1.0 - prefs[~equal_mask, 0]
+
+            assert not th.any((prefs == 0).all(dim=1)), "There are pairs with [0, 0] preferences."
+            assert not th.any((prefs == 1).all(dim=1)), "There are pairs with [1, 1] preferences."
+
+            # compute how many ties we got
+            n_ties = equal_mask.sum().item()
+            max_ties = int(0.3 * num_pairs)  # e.g. allow at most 30% ties
+
+            if n_ties > max_ties:
+                # randomly pick excess ties to convert into decisive labels
+                tie_indices = th.nonzero(equal_mask, as_tuple=True)[0]
+                drop_n = n_ties - max_ties
+                to_flip = tie_indices[th.randperm(n_ties)[:drop_n]]
+                # for those, label according to sign of return delta
+                prefs[to_flip, 0] = (first_returns[to_flip] > second_returns[to_flip]).float()
+                prefs[to_flip, 1] = 1.0 - prefs[to_flip, 0]
+                equal_mask[to_flip] = False
+
+            print(prefs)
+
+            writer.add_histogram("prefs/return_deltas", return_deltas, global_step)
+            writer.add_scalar("prefs/num_pairs", num_pairs, global_step)
+            writer.add_scalar("prefs/num_equal_labels", equal_mask.sum().item(), global_step)
+            writer.add_scalar("prefs/equal_pref_threshold", threshold, global_step)
+            writer.add_scalar("prefs/mean_return_delta", return_deltas.mean().item(), global_step)
+
+
+            # prefs = th.stack(
+            #     [(first_returns > second_returns).float(),
+            #      (second_returns >= first_returns).float()],
+            #     dim=1,
+            # ).to(device)
             
             # Create preference batch
             preference_batch = PreferenceBufferBatch(

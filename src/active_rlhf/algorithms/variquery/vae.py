@@ -1,4 +1,5 @@
 import copy
+import math
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 import torch as th
@@ -529,7 +530,7 @@ class AttnStateVAE(nn.Module):
         self.dec_input = nn.Linear(latent_dim, attn_dim)
         self.dec_blocks = nn.ModuleList(
             [TransBlock(attn_dim, n_heads, ff_dim=attn_dim * 4, dropout=attn_dropout)
-             for _ in range(2)]
+             for _ in range(n_decoder_layers)]
         )
         self.dec_ln  = nn.LayerNorm(attn_dim)
         self.dec_out = nn.Linear(attn_dim, state_dim)
@@ -627,7 +628,7 @@ class AttnStateVAE(nn.Module):
 
 class VAETrainer:
     def __init__(self,
-                 vae: AttnStateVAE,
+                 vae: MLPStateVAE,
                  lr: float = 1e-3,
                  weight_decay: float = 1e-4,
                  batch_size: int = 32,
@@ -648,6 +649,7 @@ class VAETrainer:
         self.kl_weight_beta = kl_weight_beta
         self.total_steps = total_steps
         self.early_stopping_patience = early_stopping_patience,
+        self.vae_step = 0
 
     def train(self,
               train_batch: ReplayBufferBatch,
@@ -675,8 +677,6 @@ class VAETrainer:
         epochs_no_improve = 0
         best_state = copy.deepcopy(self.vae.state_dict())
 
-        kl_weight_beta = self._get_current_kl_weight(global_step)
-
         for epoch in tqdm(range(self.num_epochs), desc="Training VAE"):
             # kl_weight_beta = self._get_kl_weight(epoch)
 
@@ -693,6 +693,7 @@ class VAETrainer:
                 x_hat, mu, log_var = self.vae(x)
 
                 # Compute losses
+                kl_weight_beta = self._get_current_kl_weight()
                 total_loss, recon_loss, kl_loss = self._loss(x, x_hat, mu, log_var, kl_weight_beta=kl_weight_beta)
 
                 # Backward pass
@@ -700,6 +701,8 @@ class VAETrainer:
                 total_loss.backward()
                 nn.utils.clip_grad_norm_(self.vae.parameters(), max_norm=1.0)
                 self.optimizer.step()
+
+                self.vae_step += 1
 
                 # Accumulate losses
                 train_total_loss += total_loss.item()
@@ -741,6 +744,7 @@ class VAETrainer:
                     x_hat, mu, log_var = self.vae(x)
 
                 # Compute losses
+                kl_weight_beta = self._get_current_kl_weight()
                 total_loss, recon_loss, kl_loss = self._loss(x, x_hat, mu, log_var, kl_weight_beta=kl_weight_beta)
 
                 # Accumulate losses
@@ -789,8 +793,12 @@ class VAETrainer:
 
         return VAETrainerMetrics(train_metrics=train_metrics, val_metrics=val_metrics)
 
-    def _get_current_kl_weight(self, global_step: int) -> float:
-        return self.kl_weight_beta * min(1.0, global_step / self.total_steps)
+    def _get_current_kl_weight(self) -> float:
+        # pos = (self.vae_step % self.kl_warmup_epochs) / self.kl_warmup_epochs  # [0,1)
+        # # cosine triangle: 0 → 1 → 0
+        # t = 0.5 * (1 - math.cos(2 * math.pi * pos))
+        # return self.kl_weight_beta * t
+        return self.kl_weight_beta
 
     def _get_kl_weight(self, epoch: int) -> float:
         """Compute the current KL weight based on linear warmup.

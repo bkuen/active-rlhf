@@ -1,12 +1,12 @@
 poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
-  --exp-name="pref_ppo_variquery" \
+  --exp-name="pref_ppo_hybrid_v1" \
   --seed=1 \
   --torch-deterministic=True \
   --cuda=True \
   --track=True \
-  --wandb-project-name="active-rlhf-tests" \
+  --wandb-project-name="active-rlhf-tests-walker" \
   --wandb-entity="bkuen-ludwig-maximilianuniversity-of-munich" \
-  --wandb-tags "variquery_v1" \
+  --wandb-tags "hybrid_v1" \
   --capture-video=False \
   --save-model=True \
   --upload-model=False \
@@ -37,11 +37,12 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --reward-net-minibatch-size=32 \
   --reward-net-ensemble-size=3 \
   --reward-net-dropout=0.1 \
+  --reward-net-hidden-dims 256 256 256 \
   --reward_net_val_split=0.2 \
   --query-schedule="linear" \
   --total-queries=500 \
   --queries-per-session=10 \
-  --selector-type="variquery" \
+  --selector-type="hybrid2" \
   --sampling-strategy="uniform" \
   --oversampling-factor=10.0 \
   --fragment-length=50 \
@@ -51,7 +52,7 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --variquery-vae-batch-size=64 \
   --variquery-vae-num-epochs=100 \
   --variquery-vae-kl-warmup-epochs=40 \
-  --variquery_vae_kl_warmup_steps=320_000 \
+  --variquery_vae_kl_warmup_steps=50 \
   --variquery_vae_early_stopping_patience=20 \
   --variquery-vae-dropout=0.1 \
   --variquery-vae-kl-weight=1.0 \

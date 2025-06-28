@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer
 from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 from sklearn.cluster import KMeans
@@ -19,6 +19,7 @@ class HybridV2Selector(Selector):
     def __init__(self,
                  writer: SummaryWriter,
                  preference_model: PreferenceModel,
+                 vae_state_dim: int,
                  fragment_length: int = 50,
                  vae_latent_dim: int = 16,
                  vae_hidden_dims: List[int] = [128, 64, 32],
@@ -27,13 +28,19 @@ class HybridV2Selector(Selector):
                  vae_dropout: float = 0.1,
                  vae_batch_size: int = 32,
                  vae_num_epochs: int = 25,
+                 vae_kl_weight: float = 1.0,
+                 vae_kl_warmup_epochs: int = 40,
+                 vae_kl_warmup_steps: int = 320_000,
+                 vae_early_stopping_patience: Optional[int] = None,
                  oversampling_factor: float = 10.0,
                  random_state: int = 42,
+                 total_steps: int = 1_000_000,
                  device: str = "cuda" if th.cuda.is_available() else "cpu"
                  ):
         self.preference_model = preference_model
         self.fragment_length = fragment_length
         self.vae_latent_dim = vae_latent_dim
+        self.vae_state_dim = vae_state_dim
         self.vae_hidden_dims = vae_hidden_dims
         self.vae_lr = vae_lr
         self.vae_weight_decay = vae_weight_decay
@@ -42,35 +49,45 @@ class HybridV2Selector(Selector):
         self.vae_num_epochs = vae_num_epochs
         self.oversampling_factor = oversampling_factor
         self.random_state = random_state
+        self.vae_kl_weight = vae_kl_weight
+        self.vae_kl_warmup_epochs = vae_kl_warmup_epochs
+        self.vae_kl_warmup_steps = vae_kl_warmup_steps
+        self.vae_early_stopping_patience = vae_early_stopping_patience
+        self.total_steps = total_steps
         self.device = device
 
         self.visualizer = VAEVisualizer(writer=writer)
         self.random_selector = RandomSelector()
 
-    def select_pairs(self, train_batch: ReplayBufferBatch, val_batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
-        batch_size = train_batch.obs.shape[0]
-        vae = MLPStateVAE(
-            state_dim=train_batch.obs.shape[2],
+        self.vae = MLPStateVAE(
+            state_dim=self.vae_state_dim,
             latent_dim=self.vae_latent_dim,
             fragment_length=self.fragment_length,
             hidden_dims=self.vae_hidden_dims,
             dropout=self.vae_dropout,
         )
 
-        vae_trainer = VAETrainer(
-            vae=vae,
+        self.vae_trainer = VAETrainer(
+            vae=self.vae,
             lr=self.vae_lr,
             weight_decay=self.vae_weight_decay,
             batch_size=self.vae_batch_size,
+            kl_warmup_epochs=self.vae_kl_warmup_epochs,
+            kl_warmup_steps=self.vae_kl_warmup_steps,
             num_epochs=self.vae_num_epochs,
+            early_stopping_patience=self.vae_early_stopping_patience,
+            total_steps=self.total_steps,
             device=self.device
         )
 
+    def select_pairs(self, train_batch: ReplayBufferBatch, val_batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
+        batch_size = train_batch.obs.shape[0]
+
         # Train VAE and encode states
-        metrics = vae_trainer.train(train_batch, global_step)
+        metrics = self.vae_trainer.train(train_batch, val_batch, global_step)
 
         num_candidates = int(num_pairs * self.oversampling_factor)
-        candidates = self.random_selector.select_pairs(train_batch, num_pairs=num_candidates, global_step=global_step)
+        candidates = self.random_selector.select_pairs(train_batch, val_batch, num_pairs=num_candidates, global_step=global_step)
 
         with th.no_grad():
             first_rews, second_rews, probs = self.preference_model(candidates.first_obs, candidates.first_acts,
@@ -85,8 +102,8 @@ class HybridV2Selector(Selector):
         first_rews, second_rews, probs = first_rews[top_indices], second_rews[top_indices], probs[top_indices]
 
         with th.no_grad():
-            first_latents, _, _ = vae.encode(candidates.first_obs)
-            second_latents, _, _ = vae.encode(candidates.second_obs)
+            first_latents, _, _ = self.vae.encode(candidates.first_obs)
+            second_latents, _, _ = self.vae.encode(candidates.second_obs)
 
         first_latents = (first_latents - first_latents.mean(dim=0)) / (first_latents.std(dim=0) + 1e-8)
         second_latents = (second_latents - second_latents.mean(dim=0)) / (second_latents.std(dim=0) + 1e-8)

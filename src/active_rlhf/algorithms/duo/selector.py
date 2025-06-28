@@ -1,3 +1,6 @@
+from sklearn.decomposition import PCA
+from sklearn.metrics import silhouette_score
+
 from active_rlhf.data.buffers import ReplayBufferBatch, TrajectoryPairBatch
 from active_rlhf.queries.selector import RandomSelector, Selector
 from active_rlhf.queries.uncertainty import estimate_epistemic_uncertainties, consensual_filter
@@ -25,9 +28,9 @@ class DUOSelector(Selector):
 
     self.random_selector = RandomSelector()
 
-  def select_pairs(self, train_batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
+  def select_pairs(self, train_batch: ReplayBufferBatch, val_batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
     num_candidates = int(num_pairs * self.oversampling_factor)
-    candidates = self.random_selector.select_pairs(train_batch, num_pairs=num_candidates, global_step=global_step)
+    candidates = self.random_selector.select_pairs(train_batch, val_batch, num_pairs=num_candidates, global_step=global_step)
     origin_candidate_len = len(candidates)
 
     print("Candidates before filtering:", origin_candidate_len)
@@ -78,7 +81,7 @@ class DUOSelector(Selector):
     print("Rewards diff standardized shape:", rewards_diff_standardized.shape)
     
     # Select the most representative pairs
-    selected_indices = self._select_from_clusters(rewards_diff_standardized, num_pairs=num_pairs)
+    selected_indices = self._select_from_clusters2(rewards_diff_standardized, num_pairs=num_pairs, global_step=global_step)
     assert selected_indices.shape == (num_pairs,)
     
     return candidates[selected_indices]
@@ -92,7 +95,40 @@ class DUOSelector(Selector):
     epistemic_uncertainties = estimate_epistemic_uncertainties(probs)
     return th.argsort(epistemic_uncertainties, descending=True)
 
-  def _select_from_clusters(self, rewards_diff: th.Tensor, num_pairs: int) -> th.Tensor:
+  def _select_from_clusters(self, rewards_diff: th.Tensor, num_pairs: int, global_step: int) -> th.Tensor:
+      # rewards_diff: (M, fragment_length) e.g. (80, 50)
+      M, D = rewards_diff.shape
+      # 1) CPU → numpy
+      X = rewards_diff.cpu().numpy()  # shape (M, 50)
+
+      # 2) PCA to 5 dims
+      pca = PCA(n_components=min(5, D), random_state=self.random_state)
+      Z = pca.fit_transform(X)  # shape (M, 5)
+
+      # 3) KMeans on the 5-D embedding
+      kmeans = KMeans(n_clusters=num_pairs, n_init=10, random_state=self.random_state)
+      labels = kmeans.fit_predict(Z)  # (M,)
+
+      score = silhouette_score(Z, labels)
+      self.writer.add_scalar("duo/silhouette", score, global_step)
+
+      # 4) pick one closest to each center
+      centers = kmeans.cluster_centers_  # (num_pairs, 5)
+      selected = []
+      for c in range(num_pairs):
+          mask = (labels == c)
+          if not mask.any():
+              # fallback: just take the top-uncertain if a cluster is empty
+              selected.append(c % M)
+              continue
+          Zi = Z[mask]  # (m,5)
+          idxs = np.nonzero(mask)[0]  # (m,)
+          dists = np.linalg.norm(Zi - centers[c], axis=1)
+          chosen = idxs[np.argmin(dists)]
+          selected.append(int(chosen))
+      return th.tensor(selected, device=rewards_diff.device)
+
+  def _select_from_clusters2(self, rewards_diff: th.Tensor, num_pairs: int, global_step: int) -> th.Tensor:
     """Cluster the rewards difference and select the most representative pairs.
 
     Args:
@@ -108,6 +144,9 @@ class DUOSelector(Selector):
     kmeans.fit(rewards_diff_np)
     labels = kmeans.labels_  # array [N]
     centers = kmeans.cluster_centers_  # array [k, D]
+
+    score = silhouette_score(rewards_diff_np, labels)
+    self.writer.add_scalar("duo/silhouette", score, global_step)
 
     selected_indices = []
     for cluster_id in range(num_pairs):
