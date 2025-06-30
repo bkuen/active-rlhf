@@ -637,6 +637,7 @@ class VAETrainer:
                  kl_warmup_epochs: int = 40,
                  kl_warmup_steps: int = 320_000,
                  total_steps: int = 1_000_000,
+                 noise_sigma: float = 0.00,
                  early_stopping_patience: Optional[int] = None,
                  device: str = "cuda" if th.cuda.is_available() else "cpu"):
         self.vae = vae
@@ -648,6 +649,7 @@ class VAETrainer:
         self.kl_warmup_steps = kl_warmup_steps
         self.kl_weight_beta = kl_weight_beta
         self.total_steps = total_steps
+        self.noise_sigma = noise_sigma
         self.early_stopping_patience = early_stopping_patience,
         self.vae_step = 0
 
@@ -687,14 +689,19 @@ class VAETrainer:
             train_all_mu, train_all_logvar = [], []
 
             for batch in train_dataloader:
-                x = batch['obs'].to(self.device)
+                x_clean = batch['obs'].to(self.device)
+
+                if self.noise_sigma != 0.0:
+                    x_corrupted = x_clean + th.randn_like(x_clean) * self.noise_sigma  # Add noise to the input
+                else:
+                    x_corrupted = x_clean
 
                 # Forward pass
-                x_hat, mu, log_var = self.vae(x)
+                x_hat, mu, log_var = self.vae(x_corrupted)
 
                 # Compute losses
                 kl_weight_beta = self._get_current_kl_weight()
-                total_loss, recon_loss, kl_loss = self._loss(x, x_hat, mu, log_var, kl_weight_beta=kl_weight_beta)
+                total_loss, recon_loss, kl_loss = self._loss(x_clean, x_hat, mu, log_var, kl_weight_beta=kl_weight_beta)
 
                 # Backward pass
                 self.optimizer.zero_grad()
@@ -737,15 +744,19 @@ class VAETrainer:
             val_all_mu, val_all_logvar = [], []
 
             for batch in val_dataloader:
-                x = batch['obs'].to(self.device)
+                x_clean = batch['obs'].to(self.device)
+                if self.noise_sigma != 0.0:
+                    x_corrupted = x_clean + th.randn_like(x_clean) * self.noise_sigma  # Add noise to the input
+                else:
+                    x_corrupted = x_clean
 
                 # Forward pass
                 with th.no_grad():
-                    x_hat, mu, log_var = self.vae(x)
+                    x_hat, mu, log_var = self.vae(x_corrupted)
 
                 # Compute losses
                 kl_weight_beta = self._get_current_kl_weight()
-                total_loss, recon_loss, kl_loss = self._loss(x, x_hat, mu, log_var, kl_weight_beta=kl_weight_beta)
+                total_loss, recon_loss, kl_loss = self._loss(x_clean, x_hat, mu, log_var, kl_weight_beta=kl_weight_beta)
 
                 # Accumulate losses
                 val_total_loss += total_loss.item()

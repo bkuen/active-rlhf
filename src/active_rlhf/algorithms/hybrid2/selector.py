@@ -32,6 +32,7 @@ class HybridV2Selector(Selector):
                  vae_kl_warmup_epochs: int = 40,
                  vae_kl_warmup_steps: int = 320_000,
                  vae_early_stopping_patience: Optional[int] = None,
+                 vae_noise_sigma: float = 0.0,
                  oversampling_factor: float = 10.0,
                  random_state: int = 42,
                  total_steps: int = 1_000_000,
@@ -53,6 +54,7 @@ class HybridV2Selector(Selector):
         self.vae_kl_warmup_epochs = vae_kl_warmup_epochs
         self.vae_kl_warmup_steps = vae_kl_warmup_steps
         self.vae_early_stopping_patience = vae_early_stopping_patience
+        self.vae_noise_sigma = vae_noise_sigma
         self.total_steps = total_steps
         self.device = device
 
@@ -77,6 +79,7 @@ class HybridV2Selector(Selector):
             num_epochs=self.vae_num_epochs,
             early_stopping_patience=self.vae_early_stopping_patience,
             total_steps=self.total_steps,
+            noise_sigma=self.vae_noise_sigma,
             device=self.device
         )
 

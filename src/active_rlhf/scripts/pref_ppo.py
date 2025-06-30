@@ -159,6 +159,8 @@ class Args:
     """number of attention blocks in the VAE"""
     variquery_vae_decoder_layers: int = 2
     """number of layers in the VAE decoder"""
+    variquery_vae_noise_sigma: float = 0.0
+    """the standard deviation of the noise added to the VAE latent space during training"""
 
     # DUO specific arguments
     duo_consensual_filter: bool = False
@@ -337,6 +339,7 @@ if __name__ == "__main__":
                 vae_attn_heads=args.variquery_vae_attention_heads,
                 vae_attn_blocks=args.variquery_vae_attention_blocks,
                 vae_decoder_layers=args.variquery_vae_decoder_layers,
+                vae_noise_sigma=args.variquery_vae_noise_sigma,
                 total_steps=args.total_timesteps,
                 device=device,
             )
@@ -383,6 +386,7 @@ if __name__ == "__main__":
                 vae_kl_warmup_steps=args.variquery_vae_kl_warmup_steps,
                 vae_early_stopping_patience=args.variquery_vae_early_stopping_patience,
                 oversampling_factor=args.oversampling_factor,
+                vae_noise_sigma=args.variquery_vae_noise_sigma,
                 device=device,
             )
         case _:

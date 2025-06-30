@@ -38,6 +38,7 @@ class VARIQuerySelector(Selector):
                  vae_attn_heads: int = 4,
                  vae_attn_blocks: int = 2,
                  vae_decoder_layers: int = 2,
+                 vae_noise_sigma: float = 0.0,
                  total_steps: int = 1_000_000,
                  device: str = "cuda" if th.cuda.is_available() else "cpu"
                  ):
@@ -61,6 +62,7 @@ class VARIQuerySelector(Selector):
         self.vae_attn_heads = vae_attn_heads
         self.vae_attn_blocks = vae_attn_blocks
         self.vae_decoder_layers = vae_decoder_layers
+        self.vae_noise_sigma = vae_noise_sigma
         self.total_steps = total_steps
 
         self.device = device
@@ -96,6 +98,7 @@ class VARIQuerySelector(Selector):
             batch_size=self.vae_batch_size,
             num_epochs=self.vae_num_epochs,
             early_stopping_patience=self.vae_early_stopping_patience,
+            noise_sigma=self.vae_noise_sigma,
             total_steps=self.total_steps,
             device=self.device
         )
