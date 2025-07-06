@@ -3,12 +3,12 @@ import wandb
 
 api = wandb.Api()
 # Project is specified by <entity/project-name>
-runs = api.runs("bkuen-ludwig-maximilianuniversity-of-munich/active-rlhf-benchmark-walker-new")
+runs = api.runs("bkuen-ludwig-maximilianuniversity-of-munich/final-benchmark-pusher")
 
 # Accumulate all rows in a list of dicts
 rows = []
 # exp_names = ["pref_ppo_random"]
-exp_names = ["pref_ppo_random_v2", "pref_ppo_variquery_v3", "pref_ppo_duo_prio_v1", "pref_ppo_hybrid_v2"]
+exp_names = ["pref_ppo_random_v1", "pref_ppo_variquery_v1", "pref_ppo_duo_v1"]
 
 for run in runs:
     # Check if the run name contains any of the specified experiment names
@@ -33,4 +33,4 @@ print("Saving data to CSV...")
 df = pd.DataFrame(rows, columns=["exp_name", "seed", "charts/episodic_return", "global_step"])
 
 # Save to CSV
-df.to_csv("output/exported_runs2.csv", index=False)
+df.to_csv("output/runs_pusher.csv", index=False)

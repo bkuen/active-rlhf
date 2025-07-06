@@ -1,12 +1,12 @@
 poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
-  --exp-name="pref_ppo_variquery_v1" \
+  --exp-name="pref_ppo_variquery_v2" \
   --seed=1 \
   --torch-deterministic=True \
   --cuda=True \
   --track=True \
   --wandb-project-name="active-rlhf-tests-ant" \
   --wandb-entity="bkuen-ludwig-maximilianuniversity-of-munich" \
-  --wandb-tags "variquery_v1" \
+  --wandb-tags "variquery_v2" \
   --capture-video=False \
   --save-model=True \
   --upload-model=False \
@@ -40,8 +40,8 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --reward-net-hidden-dims 256 256 256 \
   --reward_net_val_split=0.2 \
   --query-schedule="linear" \
-  --total-queries=500 \
-  --queries-per-session=10 \
+  --total-queries=1000 \
+  --queries-per-session=20 \
   --selector-type="variquery" \
   --sampling-strategy="uniform" \
   --oversampling-factor=10.0 \

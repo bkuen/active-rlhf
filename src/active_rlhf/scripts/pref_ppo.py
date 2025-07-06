@@ -322,6 +322,7 @@ if __name__ == "__main__":
                 writer=writer,
                 reward_norm=reward_norm,
                 reward_ensemble=reward_ensemble,
+                preference_model=preference_model,
                 vae_state_dim=envs.single_observation_space.shape[0],
                 fragment_length=args.fragment_length,
                 vae_latent_dim=args.variquery_vae_latent_dim,

@@ -1,12 +1,13 @@
 from typing import List, Tuple, Optional
-from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer, GRUStateVAE, AttnStateVAE, EnhancedGRUStateVAE
+from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer, GRUStateVAE, AttnStateVAE, \
+    EnhancedGRUStateVAE, MLPStateSkipVAE
 from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 
 from active_rlhf.data.running_stats import RunningStat
-from active_rlhf.queries.uncertainty import estimate_uncertainties
-from active_rlhf.rewards.reward_nets import RewardEnsemble
+from active_rlhf.queries.uncertainty import estimate_uncertainties, estimate_epistemic_uncertainties
+from active_rlhf.rewards.reward_nets import RewardEnsemble, PreferenceModel
 import numpy as np
 import torch as th
 
@@ -20,6 +21,7 @@ class VARIQuerySelector(Selector):
     def __init__(self,
                  writer: SummaryWriter,
                  reward_ensemble: RewardEnsemble,
+                 preference_model: PreferenceModel,
                  reward_norm: RunningStat,
                  vae_state_dim: int,
                  fragment_length: int = 50,
@@ -44,6 +46,7 @@ class VARIQuerySelector(Selector):
                  ):
         self.writer = writer
         self.reward_ensemble = reward_ensemble
+        self.preference_model = preference_model
         self.reward_norm = reward_norm
         self.fragment_length = fragment_length
         self.vae_state_dim = vae_state_dim
@@ -67,7 +70,7 @@ class VARIQuerySelector(Selector):
 
         self.device = device
 
-        self.vae = MLPStateVAE(
+        self.vae = MLPStateSkipVAE(
             state_dim=vae_state_dim,
             latent_dim=self.vae_latent_dim,
             fragment_length=self.fragment_length,
@@ -143,8 +146,20 @@ class VARIQuerySelector(Selector):
         # Step 5: Rank by uncertainty estimate
         with th.no_grad():
             rewards = self.reward_ensemble(train_batch.obs, train_batch.acts)
-            # rewards_norm = self.reward_norm(rewards)
-        ranked_pair_indices = self._rank_pairs(rewards, first_indices, second_indices).to(self.device)
+        #     # rewards_norm = self.reward_norm(rewards)
+        # ranked_pair_indices = self._rank_pairs(rewards, first_indices, second_indices).to(self.device)
+
+        # Alternative: Use DUO uncertainty estimation
+        with th.no_grad():
+            first_rews, second_rews, probs = self.preference_model(
+                train_batch.obs[first_indices],
+                train_batch.acts[first_indices],
+                train_batch.obs[second_indices],
+                train_batch.acts[second_indices]
+            )
+
+        epistemic_uncertainties = estimate_epistemic_uncertainties(probs)
+        ranked_pair_indices = th.argsort(epistemic_uncertainties, descending=True)
 
         top_indices = ranked_pair_indices[:num_pairs].to(self.device)
         top_first_indices = first_indices[top_indices].to(self.device)

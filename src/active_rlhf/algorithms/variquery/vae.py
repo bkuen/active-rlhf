@@ -444,6 +444,96 @@ class MLPStateVAE(nn.Module):
         x_hat = self.decode(z)
         return x_hat, mu, log_var
 
+class MLPStateSkipVAE(nn.Module):
+    def __init__(self, 
+                 state_dim: int,
+                 latent_dim: int, 
+                 fragment_length: int,
+                 hidden_dims: List[int] = [128, 64, 32],
+                 dropout: float = 0.1,
+                 device: str = "cuda" if th.cuda.is_available() else "cpu"):
+        super().__init__()
+        self.state_dim = state_dim
+        self.flat_dim = fragment_length * state_dim
+        self.latent_dim = latent_dim
+        self.fragment_length = fragment_length
+        self.hidden_dims = hidden_dims
+        self.dropout = dropout
+        self.device = device
+
+        self.encoder = self._create_encoder().to(self.device)
+        self.decoder_layers = self._create_decoder_layers().to(self.device)
+
+        # Latent space projections
+        self.fc_mu = nn.Linear(hidden_dims[-1], latent_dim).to(self.device)
+        self.fc_logvar = nn.Linear(hidden_dims[-1], latent_dim).to(self.device)
+
+        # Final output layer
+        self.final_layer = nn.Sequential(
+            nn.Linear(hidden_dims[0], self.flat_dim),
+            nn.LayerNorm(self.flat_dim),
+            nn.Tanh(),
+        ).to(self.device)
+
+    def _create_encoder(self):
+        encoder_layers = []
+        in_dim = self.flat_dim
+        for hidden_dim in self.hidden_dims:
+            encoder_layers.extend([
+                nn.Linear(in_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.ReLU()
+            ])
+            in_dim = hidden_dim
+        return nn.Sequential(*encoder_layers)
+    
+    def _create_decoder_layers(self):
+        # Each decoder layer takes [h, z] as input, so input dim increases by latent_dim
+        layers = nn.ModuleList()
+        hidden_dims = list(reversed(self.hidden_dims))
+        in_dim = self.latent_dim
+        for i, hidden_dim in enumerate(hidden_dims):
+            if i > 0:
+                in_dim = hidden_dims[i-1] + self.latent_dim
+            layers.append(nn.Sequential(
+                nn.Linear(in_dim, hidden_dim),
+                nn.ReLU(),
+                # nn.Dropout(self.dropout),
+            ))
+        return layers
+    
+    def encode(self, x: th.Tensor) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
+        B = x.shape[0]
+        x = x.to(self.device)
+        x = x.view(B, -1)
+        hidden = self.encoder(x)
+        mu = self.fc_mu(hidden)
+        log_var = self.fc_logvar(hidden)
+        z = self.reparameterize(mu, log_var)
+        return z, mu, log_var
+    
+    def decode(self, z: th.Tensor) -> th.Tensor:
+        z = z.to(self.device)
+        h = z
+        for i, layer in enumerate(self.decoder_layers):
+            if i == 0:
+                h = layer(h)
+            else:
+                h = layer(th.cat([h, z], dim=-1))
+        x_hat = self.final_layer(h)
+        x_hat = x_hat.view(-1, self.fragment_length, self.state_dim)
+        return x_hat
+
+    def reparameterize(self, mu: th.Tensor, log_var: th.Tensor) -> th.Tensor:
+        std = th.exp(0.5 * log_var)
+        eps = th.randn_like(std, device=self.device)
+        return mu + eps * std
+    
+    def forward(self, x: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+        z, mu, log_var = self.encode(x)
+        x_hat = self.decode(z)
+        return x_hat, mu, log_var
+
 # ──────────────────────────────────────────────────────────────
 # Helper: a single Transformer encoder/decoder block
 # (identical layout for both encoder & decoder)
