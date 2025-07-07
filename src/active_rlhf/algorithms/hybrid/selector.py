@@ -1,5 +1,5 @@
-from typing import List
-from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer
+from typing import List, Optional
+from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer, MLPStateSkipVAE
 from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 from active_rlhf.data.buffers import ReplayBufferBatch, TrajectoryPairBatch
 import torch as th
@@ -13,6 +13,7 @@ class HybridSelector(Selector):
     def __init__(self,
                  writer: SummaryWriter,
                  reward_ensemble: RewardEnsemble,
+                 vae_state_dim: int,
                  fragment_length: int = 50,
                  oversampling_factor: float = 10.0,
                  vae_latent_dim: int = 16,
@@ -22,6 +23,12 @@ class HybridSelector(Selector):
                  vae_dropout: float = 0.1,
                  vae_batch_size: int = 32,
                  vae_num_epochs: int = 25,
+                 vae_kl_weight: float = 1.0,
+                 vae_kl_warmup_epochs: int = 40,
+                 vae_kl_warmup_steps: int = 320_000,
+                 vae_early_stopping_patience: Optional[int] = None,
+                 vae_noise_sigma: float = 0.0,
+                 total_steps: int = 1_000_000,
                  gamma_z: float = 0.1,
                  gamma_r: float = 0.1,
                  beta: float = 0.3, # balance between latent and reward similarity
@@ -31,6 +38,7 @@ class HybridSelector(Selector):
         self.reward_ensemble = reward_ensemble
         self.fragment_length = fragment_length
         self.oversampling_factor = oversampling_factor
+        self.vae_state_dim = vae_state_dim
         self.vae_latent_dim = vae_latent_dim
         self.vae_hidden_dims = vae_hidden_dims
         self.vae_lr = vae_lr
@@ -38,6 +46,12 @@ class HybridSelector(Selector):
         self.vae_dropout = vae_dropout
         self.vae_batch_size = vae_batch_size
         self.vae_num_epochs = vae_num_epochs
+        self.vae_kl_weight = vae_kl_weight
+        self.vae_kl_warmup_epochs = vae_kl_warmup_epochs
+        self.vae_kl_warmup_steps = vae_kl_warmup_steps
+        self.vae_early_stopping_patience = vae_early_stopping_patience
+        self.vae_noise_sigma = vae_noise_sigma
+        self.total_steps = total_steps
         self.gamma_z = gamma_z
         self.gamma_r = gamma_r
         self.beta = beta  # balance between latent and reward similarity
@@ -45,6 +59,28 @@ class HybridSelector(Selector):
 
         self.random_selector = RandomSelector()
         self.visualizer = VAEVisualizer(writer=writer)
+
+        self.vae = MLPStateSkipVAE(
+            state_dim=vae_state_dim,
+            latent_dim=self.vae_latent_dim,
+            fragment_length=self.fragment_length,
+            hidden_dims=self.vae_hidden_dims,
+            dropout=self.vae_dropout,
+        )
+
+        self.vae_trainer = VAETrainer(
+            vae=self.vae,
+            lr=self.vae_lr,
+            weight_decay=self.vae_weight_decay,
+            kl_warmup_epochs=self.vae_kl_warmup_epochs,
+            kl_warmup_steps=self.vae_kl_warmup_steps,
+            batch_size=self.vae_batch_size,
+            num_epochs=self.vae_num_epochs,
+            early_stopping_patience=self.vae_early_stopping_patience,
+            noise_sigma=self.vae_noise_sigma,
+            total_steps=self.total_steps,
+            device=self.device
+        )
 
     def select_pairs(self, train_batch: ReplayBufferBatch, val_batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
         """
@@ -55,32 +91,15 @@ class HybridSelector(Selector):
         """
         # First, use random selector to get a larger subset
         batch_size = int(num_pairs * self.oversampling_factor)
-        candidate_pairs = self.random_selector.select_pairs(train_batch, num_pairs=batch_size, global_step=global_step)
+        candidate_pairs = self.random_selector.select_pairs(train_batch, val_batch, num_pairs=batch_size, global_step=global_step)
 
-        vae = MLPStateVAE(
-            state_dim=train_batch.obs.shape[2],
-            latent_dim=self.vae_latent_dim,
-            fragment_length=self.fragment_length,
-            hidden_dims=self.vae_hidden_dims,
-            dropout=self.vae_dropout,
-        )
-
-        vae_trainer = VAETrainer(
-            vae=vae,
-            lr=self.vae_lr,
-            weight_decay=self.vae_weight_decay,
-            batch_size=self.vae_batch_size,
-            num_epochs=self.vae_num_epochs,
-            device=self.device
-        )
-
-        metrics = vae_trainer.train(train_batch, global_step)
+        metrics = self.vae_trainer.train(train_batch, val_batch, global_step)
 
         # Encode trajectories with VAE and predict rewards
         with th.no_grad():
             # z_i, z_j: (batch_size, latent_dim)
-            z_i, _, _ = vae.encode(candidate_pairs.first_obs)
-            z_j, _, _ = vae.encode(candidate_pairs.second_obs)
+            z_i, _, _ = self.vae.encode(candidate_pairs.first_obs)
+            z_j, _, _ = self.vae.encode(candidate_pairs.second_obs)
             # r_i, r_j: (batch_size, fragment_length, ensemble_size)
             r_i = self.reward_ensemble(candidate_pairs.first_obs, candidate_pairs.first_acts)
             r_j = self.reward_ensemble(candidate_pairs.second_obs, candidate_pairs.second_acts)
