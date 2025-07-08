@@ -1,12 +1,12 @@
 poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
-  --exp-name="pref_ppo_hybrid_v2" \
+  --exp-name="pref_ppo_variquery_v3" \
   --seed=1 \
   --torch-deterministic=True \
   --cuda=True \
   --track=True \
   --wandb-project-name="active-rlhf-tests-ant" \
   --wandb-entity="bkuen-ludwig-maximilianuniversity-of-munich" \
-  --wandb-tags "hybrid_v2" \
+  --wandb-tags "variquery_v3" \
   --capture-video=False \
   --save-model=True \
   --upload-model=False \
@@ -42,7 +42,7 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --query-schedule="linear" \
   --total-queries=1000 \
   --queries-per-session=20 \
-  --selector-type="hybrid" \
+  --selector-type="variquery" \
   --sampling-strategy="uniform" \
   --oversampling-factor=10.0 \
   --fragment-length=50 \
@@ -62,6 +62,7 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --variquery_vae-attention-blocks=4 \
   --variquery-vae-decoder-layers=2 \
   --variquery_vae_noise_sigma=0.05 \
+  --variquery-cluster-size=10 \
   --duo-consensual-filter=False \
   --hybrid_dpp_gamma_z=1.0 \
   --hybrid_dpp_gamma_r=1.0 \

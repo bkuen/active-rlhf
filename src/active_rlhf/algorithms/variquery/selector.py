@@ -42,6 +42,7 @@ class VARIQuerySelector(Selector):
                  vae_decoder_layers: int = 2,
                  vae_noise_sigma: float = 0.0,
                  total_steps: int = 1_000_000,
+                 cluster_size: int = 10,
                  device: str = "cuda" if th.cuda.is_available() else "cpu"
                  ):
         self.writer = writer
@@ -66,6 +67,7 @@ class VARIQuerySelector(Selector):
         self.vae_attn_blocks = vae_attn_blocks
         self.vae_decoder_layers = vae_decoder_layers
         self.vae_noise_sigma = vae_noise_sigma
+        self.cluster_size = cluster_size
         self.total_steps = total_steps
 
         self.device = device
@@ -137,7 +139,7 @@ class VARIQuerySelector(Selector):
             latent_states, _, _ = self.vae.encode(train_batch.obs)
 
         # Step 3: Cluster and sample pairs
-        clusters = self._cluster_latent_space(latent_states=latent_states, num_clusters=num_pairs, global_step=global_step)
+        clusters = self._cluster_latent_space(latent_states=latent_states, num_clusters=self.cluster_size, global_step=global_step)
 
         # Step 4: Sample pairs
         first_indices, second_indices = self._sample_random_pair_indices(clusters=clusters, num_pairs=batch_size//2)

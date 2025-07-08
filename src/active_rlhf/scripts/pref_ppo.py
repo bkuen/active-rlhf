@@ -161,6 +161,8 @@ class Args:
     """number of layers in the VAE decoder"""
     variquery_vae_noise_sigma: float = 0.0
     """the standard deviation of the noise added to the VAE latent space during training"""
+    variquery_cluster_size: int = 10
+    """the number of clusters to use in the variquery and hybrid selector"""
 
     # DUO specific arguments
     duo_consensual_filter: bool = False
@@ -342,6 +344,7 @@ if __name__ == "__main__":
                 vae_decoder_layers=args.variquery_vae_decoder_layers,
                 vae_noise_sigma=args.variquery_vae_noise_sigma,
                 total_steps=args.total_timesteps,
+                cluster_size=args.variquery_cluster_size,
                 device=device,
             )
         case "duo":
@@ -395,6 +398,8 @@ if __name__ == "__main__":
                 vae_early_stopping_patience=args.variquery_vae_early_stopping_patience,
                 oversampling_factor=args.oversampling_factor,
                 vae_noise_sigma=args.variquery_vae_noise_sigma,
+                total_steps=args.total_timesteps,
+                cluster_size=args.variquery_cluster_size,
                 device=device,
             )
         case _:

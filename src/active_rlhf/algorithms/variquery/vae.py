@@ -365,8 +365,8 @@ class MLPStateVAE(nn.Module):
         for hidden_dim in reversed(self.hidden_dims):
             decoder_layers.extend([
                 nn.Linear(in_dim, hidden_dim),
-                nn.ReLU()
-                # nn.Dropout(self.dropout),
+                nn.ReLU(),
+                nn.Dropout(self.dropout),
             ])
             in_dim = hidden_dim
         final_layer = nn.Linear(in_dim, self.flat_dim)

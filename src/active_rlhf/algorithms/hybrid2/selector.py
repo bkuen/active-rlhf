@@ -36,6 +36,7 @@ class HybridV2Selector(Selector):
                  oversampling_factor: float = 10.0,
                  random_state: int = 42,
                  total_steps: int = 1_000_000,
+                 cluster_size: int = 10,
                  device: str = "cuda" if th.cuda.is_available() else "cpu"
                  ):
         self.preference_model = preference_model
@@ -56,6 +57,7 @@ class HybridV2Selector(Selector):
         self.vae_early_stopping_patience = vae_early_stopping_patience
         self.vae_noise_sigma = vae_noise_sigma
         self.total_steps = total_steps
+        self.cluster_size = cluster_size
         self.device = device
 
         self.visualizer = VAEVisualizer(writer=writer)
@@ -136,7 +138,7 @@ class HybridV2Selector(Selector):
         """
         embedding_np = embedding.cpu().numpy()
 
-        kmeans = KMeans(n_clusters=num_pairs, random_state=self.random_state, n_init=10, max_iter=300)
+        kmeans = KMeans(n_clusters=self.cluster_size, random_state=self.random_state, n_init=10, max_iter=300)
         kmeans.fit(embedding_np)
         labels = kmeans.labels_  # array [N]
         centers = kmeans.cluster_centers_  # array [k, D]
