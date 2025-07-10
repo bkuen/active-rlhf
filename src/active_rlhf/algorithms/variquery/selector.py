@@ -72,13 +72,13 @@ class VARIQuerySelector(Selector):
 
         self.device = device
 
-        self.vae = MLPStateSkipVAE(
+        self.vae = (MLPStateVAE(
             state_dim=vae_state_dim,
             latent_dim=self.vae_latent_dim,
             fragment_length=self.fragment_length,
             hidden_dims=self.vae_hidden_dims,
             dropout=self.vae_dropout,
-        )
+        ))
 
         # self.vae = AttnStateVAE(
         #     state_dim=vae_state_dim,

@@ -372,7 +372,7 @@ class MLPStateVAE(nn.Module):
         final_layer = nn.Linear(in_dim, self.flat_dim)
         decoder_layers.extend([
             final_layer,
-            nn.LayerNorm(self.flat_dim),
+            # nn.LayerNorm(self.flat_dim),
             nn.Tanh(),
         ])
 
@@ -445,7 +445,7 @@ class MLPStateVAE(nn.Module):
         return x_hat, mu, log_var
 
 class MLPStateSkipVAE(nn.Module):
-    def __init__(self, 
+    def __init__(self,
                  state_dim: int,
                  latent_dim: int, 
                  fragment_length: int,
@@ -471,7 +471,7 @@ class MLPStateSkipVAE(nn.Module):
         # Final output layer
         self.final_layer = nn.Sequential(
             nn.Linear(hidden_dims[0], self.flat_dim),
-            nn.LayerNorm(self.flat_dim),
+            # nn.LayerNorm(self.flat_dim),
             nn.Tanh(),
         ).to(self.device)
 
@@ -498,7 +498,7 @@ class MLPStateSkipVAE(nn.Module):
             layers.append(nn.Sequential(
                 nn.Linear(in_dim, hidden_dim),
                 nn.ReLU(),
-                # nn.Dropout(self.dropout),
+                nn.Dropout(self.dropout),
             ))
         return layers
     
