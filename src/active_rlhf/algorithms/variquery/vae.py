@@ -373,7 +373,7 @@ class MLPStateVAE(nn.Module):
         decoder_layers.extend([
             final_layer,
             # nn.LayerNorm(self.flat_dim),
-            nn.Tanh(),
+            # nn.Tanh(),
         ])
 
         return nn.Sequential(*decoder_layers)
@@ -472,7 +472,7 @@ class MLPStateSkipVAE(nn.Module):
         self.final_layer = nn.Sequential(
             nn.Linear(hidden_dims[0], self.flat_dim),
             # nn.LayerNorm(self.flat_dim),
-            nn.Tanh(),
+            # nn.Tanh(),
         ).to(self.device)
 
     def _create_encoder(self):
@@ -743,6 +743,8 @@ class VAETrainer:
         self.early_stopping_patience = early_stopping_patience,
         self.vae_step = 0
 
+        self.free_bits = 0.1
+
     def train(self,
               train_batch: ReplayBufferBatch,
               val_batch: ReplayBufferBatch,
@@ -895,10 +897,16 @@ class VAETrainer:
         return VAETrainerMetrics(train_metrics=train_metrics, val_metrics=val_metrics)
 
     def _get_current_kl_weight(self) -> float:
+        # Alternative 1: cosine triangle warm-up from 0→β_target over kl_warmup_epochs:
         # pos = (self.vae_step % self.kl_warmup_epochs) / self.kl_warmup_epochs  # [0,1)
-        # # cosine triangle: 0 → 1 → 0
         # t = 0.5 * (1 - math.cos(2 * math.pi * pos))
         # return self.kl_weight_beta * t
+
+        # Alternative 2: monotonic cosine warm-up from 0→β_target over kl_warmup_steps:
+        # progress = min(self.vae_step / self.kl_warmup_steps, 1.0)
+        # return self.kl_weight_beta * 0.5 * (1 - math.cos(math.pi * progress))
+
+        # Alternative 3: static β_target:
         return self.kl_weight_beta
 
     def _get_kl_weight(self, epoch: int) -> float:
@@ -938,9 +946,11 @@ class VAETrainer:
             kl_loss: (batch_size)
         """
         B, _, _ = x.shape
-        recon_loss = F.mse_loss(x_hat, x, reduction="sum") / B
+        recon_loss = F.mse_loss(x_hat, x, reduction="mean") # / B
 
-        kl_loss = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).sum(-1).mean()
+        kl_per_dim = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
+        # kl_per_dim = th.clamp(kl_per_dim, min=self.free_bits)  # free bits trick
+        kl_loss = kl_per_dim.sum(-1).mean()
 
         # z = self.vae.reparameterize(mu, logvar, self.device)  # (B, latent_dim)
         # z_prior = th.randn_like(z)  # sample p(z)

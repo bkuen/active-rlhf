@@ -72,7 +72,7 @@ class VARIQuerySelector(Selector):
 
         self.device = device
 
-        self.vae = (MLPStateVAE(
+        self.vae = (MLPStateSkipVAE(
             state_dim=vae_state_dim,
             latent_dim=self.vae_latent_dim,
             fragment_length=self.fragment_length,
@@ -113,22 +113,25 @@ class VARIQuerySelector(Selector):
 
     def select_pairs(self, train_batch: ReplayBufferBatch, val_batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
         batch_size = train_batch.obs.shape[0]
-        # vae = StateVAE(
-        #     state_dim=batch.obs.shape[2],
+        # self.vae = (MLPStateSkipVAE(
+        #     state_dim=self.vae_state_dim,
         #     latent_dim=self.vae_latent_dim,
         #     fragment_length=self.fragment_length,
         #     hidden_dims=self.vae_hidden_dims,
         #     dropout=self.vae_dropout,
-        # )
+        # ))
         #
-        # vae_trainer = VAETrainer(
-        #     vae=vae,
+        # self.vae_trainer = VAETrainer(
+        #     vae=self.vae,
         #     lr=self.vae_lr,
         #     weight_decay=self.vae_weight_decay,
+        #     kl_warmup_epochs=self.vae_kl_warmup_epochs,
+        #     kl_warmup_steps=self.vae_kl_warmup_steps,
         #     batch_size=self.vae_batch_size,
         #     num_epochs=self.vae_num_epochs,
-        #     kl_weight_beta=self.vae_kl_weight,
-        #     kl_warmup_epochs=self.vae_kl_warmup_epochs,
+        #     early_stopping_patience=self.vae_early_stopping_patience,
+        #     noise_sigma=self.vae_noise_sigma,
+        #     total_steps=self.total_steps,
         #     device=self.device
         # )
 

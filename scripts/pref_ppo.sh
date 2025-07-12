@@ -1,17 +1,17 @@
 poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
-  --exp-name="pref_ppo_variquery_v3" \
-  --seed=1 \
+  --exp-name="variquery_v1" \
+  --seed=4 \
   --torch-deterministic=True \
   --cuda=True \
   --track=True \
-  --wandb-project-name="active-rlhf-tests-ant" \
+  --wandb-project-name="active-rlhf-tests-halfcheetah" \
   --wandb-entity="bkuen-ludwig-maximilianuniversity-of-munich" \
-  --wandb-tags "variquery_v3" \
+  --wandb-tags "variquery_v1" \
   --capture-video=False \
   --save-model=True \
   --upload-model=False \
   --hf-entity="" \
-  --env-id="Ant-v4" \
+  --env-id="HalfCheetah-v4" \
   --total-timesteps=1000000 \
   --learning-rate=3e-4 \
   --num-envs=1 \
@@ -54,7 +54,7 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --variquery-vae-kl-warmup-epochs=40 \
   --variquery_vae_kl_warmup_steps=50 \
   --variquery_vae_early_stopping_patience=20 \
-  --variquery-vae-dropout=0.1 \
+  --variquery-vae-dropout=0.0 \
   --variquery-vae-kl-weight=1.0 \
   --variquery-vae-hidden-dims 128 64 32 \
   --variquery-vae-attention-dim=128 \
