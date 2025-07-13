@@ -22,6 +22,7 @@ dependencies = [
     "umap-learn (>=0.5.7,<0.6.0)",
     "statsmodels (>=0.14.4,<0.15.0)",
     "rliable (>=1.2.0,<2.0.0)",
+    "moviepy (>=2.2.1,<3.0.0)",
 ]
 
 packages = [{include = "active_rlhf", from="src"}]
