@@ -66,4 +66,5 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --duo-consensual-filter=False \
   --hybrid_dpp_gamma_z=1.0 \
   --hybrid_dpp_gamma_r=1.0 \
-  --hybrid_dpp_beta=0.5
+  --hybrid_dpp_beta=0.5 \
+  --save_replay_buffer=True

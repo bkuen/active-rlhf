@@ -1,0 +1,19 @@
+python3 src/active_rlhf/scripts/train_vae_on_replay_buffer.py \
+  --replay_buffer_path=runs/HalfCheetah-v4__variquery_v1__4__1752328011/replay_buffer.pkl \
+  --vae_hidden_dims 128 64 32 \
+  --vae_latent_dim 16 \
+  --vae_conv_kernel_size 5 \
+  --vae_conv_padding 2 \
+  --vae_decoder_layers 2 \
+  --vae_attention_dim 128 \
+  --vae_attention_heads 4 \
+  --vae_attention_blocks 2 \
+  --vae_dropout 0.0 \
+  --vae_kl_weight 0.0 \
+  --vae_weight_decay 1e-5 \
+  --vae_lr 1e-3 \
+  --vae_batch_size 256 \
+  --vae_num_epochs 100 \
+  --vae_early_stopping_patience 25 \
+  --fragment_length 50 \
+  --create_visualizations True

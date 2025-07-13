@@ -184,6 +184,12 @@ class Args:
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
 
+    # Replay buffer saving
+    save_replay_buffer: bool = True
+    """whether to save the replay buffer at the end of training"""
+    replay_buffer_save_path: Optional[str] = None
+    """path to save the replay buffer (if None, will use default path in runs directory)"""
+
 
 def make_env(env_id, idx, capture_video, run_name, gamma):
     def thunk():
@@ -623,6 +629,17 @@ if __name__ == "__main__":
         #     repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
         #     repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
         #     push_to_hub(args, episodic_returns, repo_id, "PPO", f"runs/{run_name}", f"videos/{run_name}-eval")
+
+    # Save replay buffer if requested
+    if args.save_replay_buffer:
+        if args.replay_buffer_save_path is None:
+            replay_buffer_path = f"runs/{run_name}/replay_buffer.pkl"
+        else:
+            replay_buffer_path = args.replay_buffer_save_path
+        
+        replay_buffer.save(replay_buffer_path)
+        print(f"Replay buffer saved to {replay_buffer_path}")
+        print("You can now use this data to train a VAE or analyze the collected trajectories.")
 
     envs.close()
     writer.close()

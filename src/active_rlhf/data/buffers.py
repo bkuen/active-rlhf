@@ -1,3 +1,5 @@
+import os
+import pickle
 from random import random
 from typing import TypedDict, Union, Sequence, List, Optional, Literal
 import numpy as np
@@ -90,6 +92,71 @@ class ReplayBuffer:
         self.trajectories: List[TrajectoryInfo] = []
         self.device = device
         self.global_step = 0
+
+    def save(self, filepath: str) -> None:
+        """Save the replay buffer to a file.
+        
+        Args:
+            filepath: Path where to save the replay buffer.
+        """
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        
+        # Prepare data for saving (move to CPU to avoid device issues)
+        save_data = {
+            'capacity': self.capacity,
+            'fragment_length': self.fragment_length,
+            'size': self.size,
+            'pos': self.pos,
+            'global_step': self.global_step,
+            'obs': self.obs.cpu(),
+            'acts': self.acts.cpu(),
+            'rews': self.rews.cpu(),
+            'dones': self.dones.cpu(),
+            'trajectories': self.trajectories,
+            'env_obs_shape': self.envs.single_observation_space.shape,
+            'env_act_shape': self.envs.single_action_space.shape,
+        }
+        
+        with open(filepath, 'wb') as f:
+            pickle.dump(save_data, f)
+        
+        print(f"Replay buffer saved to {filepath}")
+        print(f"Buffer statistics: {self.get_trajectory_statistics()}")
+
+    @classmethod
+    def load(cls, filepath: str, envs: SyncVectorEnv, fragment_length: int, device: str = "cuda" if th.cuda.is_available() else "cpu") -> 'ReplayBuffer':
+        """Load a replay buffer from a file.
+        
+        Args:
+            filepath: Path to the saved replay buffer file.
+            envs: The environment vector (needed for initialization).
+            device: Device to load the tensors on.
+            
+        Returns:
+            Loaded ReplayBuffer instance.
+        """
+        with open(filepath, 'rb') as f:
+            save_data = pickle.load(f)
+        
+        # Create new buffer instance
+        buffer = cls(envs=envs, capacity=save_data['capacity'], 
+                    fragment_length=fragment_length, device=device)
+        
+        # Restore data
+        buffer.size = save_data['size']
+        buffer.pos = save_data['pos']
+        buffer.global_step = save_data['global_step']
+        buffer.obs = save_data['obs'].to(device)
+        buffer.acts = save_data['acts'].to(device)
+        buffer.rews = save_data['rews'].to(device)
+        buffer.dones = save_data['dones'].to(device)
+        buffer.trajectories = save_data['trajectories']
+        
+        print(f"Replay buffer loaded from {filepath}")
+        print(f"Buffer statistics: {buffer.get_trajectory_statistics()}")
+        
+        return buffer
 
     def add(self, obs: th.Tensor, act: th.Tensor, rew: th.Tensor, done: th.Tensor, split: Literal["train", "val"] = "train"):
         """Add a new transition to the buffer.
@@ -366,6 +433,10 @@ class ReplayBuffer:
 
         start_indices = th.tensor(start_indices, device=self.device)
         indices = (start_indices[:, None] + th.arange(self.fragment_length, device=self.device)[None, :])
+        
+        # Apply modulo operation to handle circular buffer wrapping
+        indices = indices % self.capacity
+        
         return ReplayBufferBatch(
             obs=self.obs[indices].view(batch_size, self.fragment_length, -1),
             acts=self.acts[indices].view(batch_size, self.fragment_length, -1),
@@ -411,6 +482,73 @@ class ReplayBuffer:
         writer.add_scalar("replay_buffer/std_on_policiness_score", stats['std_on_policiness_score'], global_step)
         writer.add_scalar("replay_buffer/min_on_policiness_score", stats['min_on_policiness_score'], global_step)
         writer.add_scalar("replay_buffer/max_on_policiness_score", stats['max_on_policiness_score'], global_step)
+
+    def get_all_trajectories(self, split: Optional[Literal["train", "val"]] = None) -> ReplayBufferBatch:
+        """Get all trajectories from the buffer, optionally filtered by split.
+        
+        Args:
+            split: If provided, only return trajectories from this split ("train" or "val").
+                  If None, return all trajectories.
+                  
+        Returns:
+            ReplayBufferBatch containing all matching trajectories.
+        """
+        if split is not None:
+            valid_trajectories = [t for t in self.trajectories if t.split == split]
+        else:
+            valid_trajectories = self.trajectories
+        
+        if not valid_trajectories:
+            raise ValueError(f"No trajectories found for split: {split}")
+        
+        # Collect all trajectory fragments
+        all_obs = []
+        all_acts = []
+        all_rews = []
+        all_dones = []
+        
+        for trajectory in valid_trajectories:
+            start_pos = trajectory.start_pos
+            length = trajectory.length
+            
+            # Handle circular buffer wrapping
+            if start_pos + length <= self.capacity:
+                traj_obs = self.obs[start_pos:start_pos + length]
+                traj_acts = self.acts[start_pos:start_pos + length]
+                traj_rews = self.rews[start_pos:start_pos + length]
+                traj_dones = self.dones[start_pos:start_pos + length]
+            else:
+                # Handle wrapping case
+                first_part_length = self.capacity - start_pos
+                traj_obs = th.cat([
+                    self.obs[start_pos:],
+                    self.obs[:length - first_part_length]
+                ], dim=0)
+                traj_acts = th.cat([
+                    self.acts[start_pos:],
+                    self.acts[:length - first_part_length]
+                ], dim=0)
+                traj_rews = th.cat([
+                    self.rews[start_pos:],
+                    self.rews[:length - first_part_length]
+                ], dim=0)
+                traj_dones = th.cat([
+                    self.dones[start_pos:],
+                    self.dones[:length - first_part_length]
+                ], dim=0)
+            
+            all_obs.append(traj_obs)
+            all_acts.append(traj_acts)
+            all_rews.append(traj_rews)
+            all_dones.append(traj_dones)
+        
+        # Stack all trajectories
+        return ReplayBufferBatch(
+            obs=th.cat(all_obs, dim=0),
+            acts=th.cat(all_acts, dim=0),
+            rews=th.cat(all_rews, dim=0),
+            dones=th.cat(all_dones, dim=0)
+        )
 
 class RolloutBuffer:
     def __init__(self,

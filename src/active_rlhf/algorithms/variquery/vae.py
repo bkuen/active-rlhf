@@ -1,7 +1,7 @@
 import copy
 import math
 from dataclasses import dataclass
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Sequence
 import torch as th
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
@@ -340,6 +340,7 @@ class MLPStateVAE(nn.Module):
         self.dropout = dropout
         self.device = device
 
+        # self.input_norm = nn.LayerNorm(self.flat_dim)
         self.encoder = self._create_encoder().to(self.device)
         self.decoder = self._create_decoder().to(self.device)
 
@@ -393,6 +394,7 @@ class MLPStateVAE(nn.Module):
         B = x.shape[0]
         x = x.to(self.device)
         x = x.view(B, -1)  # Flatten to (batch_size, fragment_length * state_dim)
+        # x = self.input_norm(x)
 
         # Pass through encoder
         hidden = self.encoder(x)
@@ -461,6 +463,7 @@ class MLPStateSkipVAE(nn.Module):
         self.dropout = dropout
         self.device = device
 
+        # self.input_norm = nn.LayerNorm(self.flat_dim)
         self.encoder = self._create_encoder().to(self.device)
         self.decoder_layers = self._create_decoder_layers().to(self.device)
 
@@ -506,6 +509,8 @@ class MLPStateSkipVAE(nn.Module):
         B = x.shape[0]
         x = x.to(self.device)
         x = x.view(B, -1)
+        # x = self.input_norm(x)
+
         hidden = self.encoder(x)
         mu = self.fc_mu(hidden)
         log_var = self.fc_logvar(hidden)
@@ -533,6 +538,143 @@ class MLPStateSkipVAE(nn.Module):
         z, mu, log_var = self.encode(x)
         x_hat = self.decode(z)
         return x_hat, mu, log_var
+
+
+class ConvStateVAE(nn.Module):
+    """
+    Convolution-MLP VAE for fixed-length state fragments.
+    • LayerNorm on the flattened input (per sample) normalises scale.
+    • Encoder funnel is strictly decreasing (128 → 64 → 32 → μ, log σ²).
+    • Decoder mirrors the funnel and learns a per-state output scale.
+    """
+
+    def __init__(
+        self,
+        state_dim: int,
+        latent_dim: int,
+        fragment_length: int,
+        hidden_dims: Sequence[int] = (128, 64, 32),
+        kernel_size: int = 5,
+        dropout: float = 0.05,
+        device: str | th.device = "cuda" if th.cuda.is_available() else "cpu",
+    ):
+        super().__init__()
+        self.state_dim = state_dim
+        self.fragment_length = fragment_length
+        self.flat_dim = state_dim * fragment_length
+        self.latent_dim = latent_dim
+        self.hidden_dims = tuple(hidden_dims)
+        self.device = th.device(device)
+
+        # --------------------------------------------------------------------- #
+        # Normalisation / denormalisation
+        # --------------------------------------------------------------------- #
+        self.input_norm = nn.LayerNorm(self.flat_dim, elementwise_affine=False)
+
+        # --------------------------------------------------------------------- #
+        # Convolutional front-end
+        # --------------------------------------------------------------------- #
+        self.conv = nn.Sequential(
+            nn.Conv1d(state_dim, 128, kernel_size, padding=(kernel_size - 1) // 2),
+            nn.ReLU(),
+            nn.Conv1d(128, 256, kernel_size, padding=(kernel_size - 1) // 2),
+            nn.ReLU(),
+        )
+
+        # Project flattened conv features to the first hidden dim
+        self.conv_proj = nn.Linear(256 * fragment_length, self.hidden_dims[0])
+
+        # --------------------------------------------------------------------- #
+        # Encoder MLP  (monotonic funnel)
+        # --------------------------------------------------------------------- #
+        enc_layers: list[nn.Module] = []
+        in_dim = self.hidden_dims[0]
+        for h in self.hidden_dims[1:]:
+            enc_layers += [
+                nn.Linear(in_dim, h),
+                nn.LayerNorm(h),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+            ]
+            in_dim = h
+        self.encoder = nn.Sequential(*enc_layers)
+
+        self.fc_mu = nn.Linear(self.hidden_dims[-1], latent_dim)
+        self.fc_logvar = nn.Linear(self.hidden_dims[-1], latent_dim)
+
+        # --------------------------------------------------------------------- #
+        # Decoder MLP (mirror)
+        # --------------------------------------------------------------------- #
+        dec_layers: list[nn.Module] = [nn.Linear(latent_dim, self.hidden_dims[-1]), nn.ReLU()]
+        in_dim = self.hidden_dims[-1]
+        for h in reversed(self.hidden_dims[:-1]):
+            dec_layers += [
+                nn.Linear(in_dim, h),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+            ]
+            in_dim = h
+        dec_layers += [nn.Linear(in_dim, self.flat_dim)]
+        self.decoder = nn.Sequential(*dec_layers)
+
+        # Learnable per-state output scale / bias to undo input normalisation
+        self.out_scale = nn.Parameter(th.ones(state_dim))
+        self.out_bias = nn.Parameter(th.zeros(state_dim))
+
+        # --------------------------------------------------------------------- #
+        self.to(self.device)
+
+    # ------------------------------------------------------------------------- #
+    # Forward components
+    # ------------------------------------------------------------------------- #
+    def encode(self, x: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """
+        Args:
+            x: (B, L, S)
+        Returns:
+            z, mu, logvar – (B, latent_dim)
+        """
+        B = x.size(0)
+        # Apply sample-wise LayerNorm
+        x = self.input_norm(x.view(B, -1)).view(B, self.fragment_length, self.state_dim)
+
+        # → (B, S, L) for Conv1d
+        h_conv = self.conv(x.transpose(1, 2))
+        h_flat = h_conv.flatten(1)                    # (B, 256 × L)
+        h_proj = self.conv_proj(h_flat)               # (B, hidden_dims[0])
+        h = self.encoder(h_proj)                      # (B, hidden_dims[-1])
+
+        mu = self.fc_mu(h)
+        logvar = self.fc_logvar(h).clamp(-6.0, 3.0)   # numerical safety
+        z = self.reparameterize(mu, logvar)
+        return z, mu, logvar
+
+    def decode(self, z: th.Tensor) -> th.Tensor:
+        """
+        Args:
+            z: (B, latent_dim)
+        Returns:
+            x_hat: (B, L, S)
+        """
+        B = z.size(0)
+        flat = self.decoder(z)                        # (B, L × S)
+        x_hat = flat.view(B, self.fragment_length, self.state_dim)
+        # Undo normalisation with learned scale / bias
+        x_hat = x_hat * self.out_scale + self.out_bias
+        return x_hat
+
+    # ------------------------------------------------------------------------- #
+    # VAE utilities
+    # ------------------------------------------------------------------------- #
+    def reparameterize(self, mu: th.Tensor, logvar: th.Tensor) -> th.Tensor:
+        std = (0.5 * logvar).exp()
+        eps = th.randn_like(std)
+        return mu + eps * std
+
+    def forward(self, x: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+        z, mu, logvar = self.encode(x.to(self.device))
+        x_hat = self.decode(z)
+        return x_hat, mu, logvar
 
 # ──────────────────────────────────────────────────────────────
 # Helper: a single Transformer encoder/decoder block
