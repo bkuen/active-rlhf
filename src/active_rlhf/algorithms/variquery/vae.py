@@ -925,6 +925,8 @@ class VAETrainer:
             for batch in train_dataloader:
                 x_clean = batch['obs'].to(self.device)
 
+                self.optimizer.zero_grad()
+
                 if self.noise_sigma != 0.0:
                     x_corrupted = x_clean + th.randn_like(x_clean) * self.noise_sigma  # Add noise to the input
                 else:
@@ -938,9 +940,8 @@ class VAETrainer:
                 total_loss, recon_loss, kl_loss = self._loss(x_clean, x_hat, mu, log_var, kl_weight_beta=kl_weight_beta)
 
                 # Backward pass
-                self.optimizer.zero_grad()
                 total_loss.backward()
-                nn.utils.clip_grad_norm_(self.vae.parameters(), max_norm=1.0)
+                # nn.utils.clip_grad_norm_(self.vae.parameters(), max_norm=1.0)
                 self.optimizer.step()
 
                 self.vae_step += 1

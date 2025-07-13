@@ -1,6 +1,6 @@
 from typing import List, Tuple, Optional
 from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer, GRUStateVAE, AttnStateVAE, \
-    EnhancedGRUStateVAE, MLPStateSkipVAE
+    EnhancedGRUStateVAE, MLPStateSkipVAE, ConvStateVAE
 from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
@@ -36,6 +36,7 @@ class VARIQuerySelector(Selector):
                  vae_kl_warmup_epochs: int = 40,
                  vae_kl_warmup_steps: int = 320_000,
                  vae_early_stopping_patience: Optional[int] = None,
+                 vae_conv_kernel_size: int = 5,
                  vae_attn_dim: int = 128,
                  vae_attn_heads: int = 4,
                  vae_attn_blocks: int = 2,
@@ -62,6 +63,7 @@ class VARIQuerySelector(Selector):
         self.vae_kl_warmup_epochs = vae_kl_warmup_epochs
         self.vae_kl_warmup_steps = vae_kl_warmup_steps
         self.vae_early_stopping_patience = vae_early_stopping_patience
+        self.vae_conv_kernel_size = vae_conv_kernel_size
         self.vae_attn_dim = vae_attn_dim
         self.vae_attn_heads = vae_attn_heads
         self.vae_attn_blocks = vae_attn_blocks
@@ -72,13 +74,24 @@ class VARIQuerySelector(Selector):
 
         self.device = device
 
-        self.vae = (MLPStateSkipVAE(
+        # self.vae = (MLPStateSkipVAE(
+        #     state_dim=vae_state_dim,
+        #     latent_dim=self.vae_latent_dim,
+        #     fragment_length=self.fragment_length,
+        #     hidden_dims=self.vae_hidden_dims,
+        #     dropout=self.vae_dropout,
+        # ))
+
+        self.vae = ConvStateVAE(
             state_dim=vae_state_dim,
-            latent_dim=self.vae_latent_dim,
-            fragment_length=self.fragment_length,
-            hidden_dims=self.vae_hidden_dims,
-            dropout=self.vae_dropout,
-        ))
+            latent_dim=vae_latent_dim,
+            hidden_dims=vae_hidden_dims,
+            dropout=vae_dropout,
+            device=device,
+            kernel_size=vae_conv_kernel_size,
+            # padding=args.vae_conv_padding,
+            fragment_length=fragment_length,
+        )
 
         # self.vae = AttnStateVAE(
         #     state_dim=vae_state_dim,

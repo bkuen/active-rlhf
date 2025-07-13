@@ -151,6 +151,8 @@ class Args:
     """number of steps to warm up the KL loss term in VAE training (as an alternative to epochs)"""
     variquery_vae_early_stopping_patience: Optional[int] = None
     """number of epochs to wait for early stopping in VAE training, None means no early stopping"""
+    variquery_vae_conv_kernel_size: int = 5
+    """kernel size for the convolutional layers in the VAE"""
     variquery_vae_attention_dim: int = 128
     """dimension of the attention layer in the VAE"""
     variquery_vae_attention_heads: int = 4
@@ -344,6 +346,7 @@ if __name__ == "__main__":
                 vae_kl_warmup_epochs=args.variquery_vae_kl_warmup_epochs,
                 vae_kl_warmup_steps=args.variquery_vae_kl_warmup_steps,
                 vae_early_stopping_patience=args.variquery_vae_early_stopping_patience,
+                vae_conv_kernel_size=args.variquery_vae_conv_kernel_size,
                 vae_attn_dim=args.variquery_vae_attention_dim,
                 vae_attn_heads=args.variquery_vae_attention_heads,
                 vae_attn_blocks=args.variquery_vae_attention_blocks,
