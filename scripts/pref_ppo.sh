@@ -50,8 +50,10 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --variquery-vae-hidden-dims 128 64 32 \
   --variquery-vae-lr=1e-3 \
   --variquery-vae-weight-decay=1e-5 \
-  --variquery-vae-batch-size=128 \
-  --variquery-vae-num-epochs=20 \
+  --variquery-vae-batch-size=4096 \
+  --variquery-vae-val-batch-size=512 \
+  --variquery-vae-minibatch-size=512 \
+  --variquery-vae-num-epochs=4 \
   --variquery-vae-kl-warmup-epochs=40 \
   --variquery_vae_kl_warmup_steps=50 \
   --variquery_vae_early_stopping_patience=20 \

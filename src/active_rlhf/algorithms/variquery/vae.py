@@ -6,9 +6,11 @@ import torch as th
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from active_rlhf.data.buffers import ReplayBufferBatch
+from active_rlhf.data.buffers import ReplayBufferBatch, ReplayBuffer
+
 
 @dataclass
 class LatentStats:
@@ -858,6 +860,144 @@ class AttnStateVAE(nn.Module):
         x_hat = self.decode(z)
         return x_hat, mu, logvar
 
+class BetterVAETrainer:
+    def __init__(self,
+                 writer: SummaryWriter,
+                 replay_buffer: ReplayBuffer,
+                 vae: ConvStateVAE,
+                 lr: float = 1e-3,
+                 weight_decay: float = 1e-4,
+                 batch_size: int = 1024,
+                 minibatch_size: int = 64,
+                 val_batch_size: int = 128,
+                 num_epochs: int = 25,
+                 kl_weight_beta: float = 1.0,
+                 kl_warmup_steps: Optional[int] = None,
+                 total_steps: int = 1_000_000,
+                 noise_sigma: float = 0.00):
+        self.writer = writer
+        self.replay_buffer = replay_buffer
+        self.vae = vae
+        self.batch_size = batch_size
+        self.minibatch_size = minibatch_size
+        self.val_batch_size = val_batch_size
+        self.num_epochs = num_epochs
+        self.kl_weight_beta = kl_weight_beta
+        self.kl_warmup_steps = kl_warmup_steps
+        self.total_steps = total_steps
+        self.noise_sigma = noise_sigma
+
+        self.optimizer = th.optim.AdamW(self.vae.parameters(), lr=lr, weight_decay=weight_decay)
+
+        self.vae_step = 0
+
+    def get_kl_weight(self) -> float:
+        if self.kl_warmup_steps is None or self.kl_warmup_steps <= 0:
+            # no warm-up requested
+            return self.kl_weight_beta
+
+            # progress in [0, 1]
+        progress = min(1.0, self.vae_step / float(self.kl_warmup_steps))
+        return self.kl_weight_beta * progress
+
+    def train(self, global_step: int):
+        """
+        Train the VAE on a replay buffer.
+
+        Args:
+            global_step: int, the global step for logging.
+        """
+
+        train_recon_losses = []
+        train_kl_losses = []
+        train_total_losses = []
+        val_recon_losses = []
+        val_kl_losses = []
+        val_total_losses = []
+
+        for epoch in tqdm(range(self.num_epochs), desc="Training VAE"):
+            train_dataset = self.replay_buffer.sample2(self.batch_size, split="train")
+            val_batch = self.replay_buffer.sample2(self.val_batch_size, split="val")
+
+            train_loader = DataLoader(
+                ReplayBufferDataset(train_dataset),
+                batch_size=self.minibatch_size,
+                shuffle=True,
+                pin_memory=True,
+            )
+
+            for train_batch in train_loader:
+                x_clean = train_batch["obs"].to(self.vae.device)
+                if self.noise_sigma != 0.0:
+                    x_corrupted = x_clean + th.randn_like(x_clean) * self.noise_sigma  # Add noise to the input
+                else:
+                    x_corrupted = x_clean
+
+                # Training
+                self.vae.train()
+                self.optimizer.zero_grad()
+
+                # Forward pass
+                x_hat, mu, log_var = self.vae(x_corrupted)
+
+                # Compute losses
+                recon_loss = th.nn.functional.mse_loss(x_hat, x_clean)
+                kl_loss = -0.5 * th.sum(1 + log_var - mu.pow(2) - log_var.exp()) / train_batch["obs"].shape[0]
+                total_loss = recon_loss + self.get_kl_weight() * kl_loss
+
+                train_recon_losses.append(recon_loss.item())
+                train_kl_losses.append(kl_loss.item())
+                train_total_losses.append(total_loss.item())
+
+                # Backward pass
+                total_loss.backward()
+                self.optimizer.step()
+
+            # Validation
+            self.vae.eval()
+            with th.no_grad():
+                val_x_clean = val_batch.obs.to(self.vae.device)
+                if self.noise_sigma != 0.0:
+                    val_x_corrupted = val_x_clean + th.randn_like(val_x_clean) * self.noise_sigma  # Add noise to the input
+                else:
+                    val_x_corrupted = val_x_clean
+
+                val_x_hat, val_mu, val_log_var = self.vae(val_x_corrupted)
+                val_recon_loss = th.nn.functional.mse_loss(val_x_hat, val_x_clean)
+                val_kl_loss = -0.5 * th.sum(1 + val_log_var - val_mu.pow(2) - val_log_var.exp()) / val_batch.obs.shape[0]
+                val_total_loss = val_recon_loss + self.get_kl_weight() * val_kl_loss
+
+                val_recon_losses.append(val_recon_loss.item())
+                val_kl_losses.append(val_kl_loss.item())
+                val_total_losses.append(val_total_loss.item())
+
+            # Log per-epoch losses
+            # self.writer.add_scalar("vae/epoch_train_recon_loss", recon_loss.item(), self.vae_step)
+            # self.writer.add_scalar("vae/epoch_train_kl_loss", kl_loss.item(), self.vae_step)
+            # self.writer.add_scalar("vae/epoch_train_total_loss", total_loss.item(), self.vae_step)
+            # self.writer.add_scalar("vae/epoch_val_recon_loss", val_recon_loss.item(), self.vae_step)
+            # self.writer.add_scalar("vae/epoch_val_kl_loss", val_kl_loss.item(), self.vae_step)
+            # self.writer.add_scalar("vae/epoch_val_total_loss", val_total_loss.item(), self.vae_step)
+
+            self.vae_step += 1
+
+        # Log average losses
+        avg_train_recon_loss = sum(train_recon_losses) / len(train_recon_losses)
+        avg_train_kl_loss = sum(train_kl_losses) / len(train_kl_losses)
+        avg_train_total_loss = sum(train_total_losses) / len(train_total_losses)
+
+        avg_val_recon_loss = sum(val_recon_losses) / len(val_recon_losses)
+        avg_val_kl_loss = sum(val_kl_losses) / len(val_kl_losses)
+        avg_val_total_loss = sum(val_total_losses) / len(val_total_losses)
+
+        self.writer.add_scalar("vae/train_recon_loss", avg_train_recon_loss, global_step)
+        self.writer.add_scalar("vae/train_kl_loss", avg_train_kl_loss, global_step)
+        self.writer.add_scalar("vae/train_total_loss", avg_train_total_loss, global_step)
+        self.writer.add_scalar("vae/val_recon_loss", avg_val_recon_loss, global_step)
+        self.writer.add_scalar("vae/val_kl_loss", avg_val_kl_loss, global_step)
+        self.writer.add_scalar("vae/val_total_loss", avg_val_total_loss, global_step)
+
+
 class VAETrainer:
     def __init__(self,
                  vae: MLPStateVAE,
@@ -1099,7 +1239,7 @@ class VAETrainer:
         # z_prior = th.randn_like(z)  # sample p(z)
         # mmd_loss = self.compute_mmd(z, z_prior)
 
-        total_loss = recon_loss + 1.0 * kl_loss # + 0.5 * mmd_loss
+        total_loss = recon_loss + kl_weight_beta * kl_loss # + 0.5 * mmd_loss
 
         return total_loss, recon_loss, kl_loss
 

@@ -18,6 +18,7 @@ import imageio
 import numpy as np
 import torch as th
 import gymnasium as gym
+import umap
 from gymnasium import Env
 from gymnasium.vector import SyncVectorEnv
 import moviepy
@@ -27,9 +28,10 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 import matplotlib.pyplot as plt
 
-from active_rlhf.data.buffers import ReplayBuffer
+from active_rlhf.data.buffers import ReplayBuffer, ReplayBufferBatch
 from active_rlhf.algorithms.variquery.vae import MLPStateVAE, MLPStateSkipVAE, AttnStateVAE, GRUStateVAE, \
     EnhancedGRUStateVAE, ConvStateVAE
+from active_rlhf.video import video
 
 
 @dataclass
@@ -88,6 +90,18 @@ class Args:
     """whether to create VAE visualizations"""
     num_visualization_samples: int = 1000
     """number of samples to use for visualization"""
+    
+    # Gradual data unlocking
+    enable_gradual_unlocking: bool = False
+    """whether to gradually unlock more data from the buffer over epochs"""
+    initial_data_fraction: float = 0.1
+    """fraction of data to start with (0.1 = 10% of available data)"""
+    final_data_fraction: float = 1.0
+    """fraction of data to end with (1.0 = 100% of available data)"""
+    unlock_schedule: str = "linear"
+    """schedule for unlocking data: 'linear', 'exponential', or 'step'"""
+    unlock_steps: int = 10
+    """number of steps to gradually unlock data (for step schedule)"""
 
 
 def make_env(env_id: str):
@@ -95,6 +109,118 @@ def make_env(env_id: str):
     env = gym.make(env_id)
     env = gym.wrappers.FlattenObservation(env)
     return env
+
+
+def get_data_fraction(epoch: int, total_epochs: int, initial_fraction: float, final_fraction: float, 
+                     schedule: str, unlock_steps: int) -> float:
+    """
+    Calculate the fraction of data to use at a given epoch based on the unlock schedule.
+    
+    Args:
+        epoch: Current epoch (0-indexed)
+        total_epochs: Total number of training epochs
+        initial_fraction: Starting fraction of data (0.0 to 1.0)
+        final_fraction: Final fraction of data (0.0 to 1.0)
+        schedule: Unlock schedule ('linear', 'exponential', 'step')
+        unlock_steps: Number of steps for step schedule
+    
+    Returns:
+        Fraction of data to use (0.0 to 1.0)
+    """
+    if schedule == "linear":
+        # Linear interpolation from initial to final fraction
+        progress = epoch / max(1, total_epochs - 1)
+        return initial_fraction + (final_fraction - initial_fraction) * progress
+    
+    elif schedule == "exponential":
+        # Exponential growth from initial to final fraction
+        progress = epoch / max(1, total_epochs - 1)
+        # Use exponential curve: y = a * (b^x - 1) / (b - 1)
+        # This gives smooth growth from initial_fraction to final_fraction
+        b = 2.0  # Base for exponential growth
+        exp_progress = (b ** progress - 1) / (b - 1)
+        return initial_fraction + (final_fraction - initial_fraction) * exp_progress
+    
+    elif schedule == "step":
+        # Step-wise unlocking at regular intervals
+        step_size = total_epochs / unlock_steps
+        current_step = int(epoch / step_size)
+        step_progress = current_step / unlock_steps
+        return initial_fraction + (final_fraction - initial_fraction) * step_progress
+    
+    else:
+        # Default to linear
+        progress = epoch / max(1, total_epochs - 1)
+        return initial_fraction + (final_fraction - initial_fraction) * progress
+
+
+def get_available_trajectories(replay_buffer, split: str, data_fraction: float) -> list:
+    """
+    Get a subset of trajectories based on the data fraction.
+    
+    Args:
+        replay_buffer: The replay buffer
+        split: Which split to use ('train', 'val', or None for all)
+        data_fraction: Fraction of data to use (0.0 to 1.0)
+    
+    Returns:
+        List of trajectory indices to use
+    """
+    if split is None:
+        # Use all trajectories
+        all_trajectories = [t for t in replay_buffer.trajectories if t.length >= replay_buffer.fragment_length]
+    else:
+        # Use trajectories from specific split
+        all_trajectories = [t for t in replay_buffer.trajectories 
+                           if t.length >= replay_buffer.fragment_length and t.split == split]
+    
+    # Sort trajectories by start position for consistent ordering
+    all_trajectories.sort(key=lambda t: t.start_pos)
+    
+    # Calculate how many trajectories to use
+    num_to_use = max(1, int(len(all_trajectories) * data_fraction))
+    
+    return all_trajectories[:num_to_use]
+
+
+def sample_with_trajectory_subset(replay_buffer, batch_size: int, trajectories: list, device: str) -> ReplayBufferBatch:
+    """
+    Sample from a specific subset of trajectories.
+    
+    Args:
+        replay_buffer: The replay buffer
+        batch_size: Number of samples to generate
+        trajectories: List of trajectories to sample from
+        device: Device to put tensors on
+    
+    Returns:
+        ReplayBufferBatch with sampled data
+    """
+    if not trajectories:
+        raise ValueError("No trajectories provided for sampling")
+    
+    # Sample trajectory indices
+    chosen_idx = np.random.choice(len(trajectories), size=batch_size, replace=True)
+    
+    # Get start indices within each trajectory
+    start_indices = []
+    for ep_idx in chosen_idx:
+        ep = trajectories[ep_idx]
+        ep_len = ep.length
+        start_indices.append(ep.start_pos + np.random.randint(0, ep_len - replay_buffer.fragment_length + 1))
+    
+    start_indices = th.tensor(start_indices, device=device)
+    indices = (start_indices[:, None] + th.arange(replay_buffer.fragment_length, device=device)[None, :])
+    
+    # Apply modulo operation to handle circular buffer wrapping
+    indices = indices % replay_buffer.capacity
+    
+    return ReplayBufferBatch(
+        obs=replay_buffer.obs[indices].view(batch_size, replay_buffer.fragment_length, -1),
+        acts=replay_buffer.acts[indices].view(batch_size, replay_buffer.fragment_length, -1),
+        rews=replay_buffer.rews[indices].view(batch_size, replay_buffer.fragment_length, -1),
+        dones=replay_buffer.dones[indices].view(batch_size, replay_buffer.fragment_length, -1)
+    )
 
 
 def main():
@@ -199,12 +325,44 @@ def main():
     # Create a simple training loop since the VAE trainer expects specific data format
     optimizer = th.optim.Adam(vae.parameters(), lr=args.vae_lr, weight_decay=args.vae_weight_decay)
     
+    # Initialize data fraction tracking
+    if args.enable_gradual_unlocking:
+        print(f"Gradual data unlocking enabled:")
+        print(f"  Schedule: {args.unlock_schedule}")
+        print(f"  Initial fraction: {args.initial_data_fraction:.1%}")
+        print(f"  Final fraction: {args.final_data_fraction:.1%}")
+        print(f"  Unlock steps: {args.unlock_steps}")
+    
     for epoch in range(args.vae_num_epochs):
         print(f"Epoch {epoch + 1}/{args.vae_num_epochs}")
         
-        # Sample training and validation batches
-        train_batch = replay_buffer.sample2(args.vae_batch_size, split=train_split)
-        val_batch = replay_buffer.sample2(args.vae_batch_size, split="val")
+        # Calculate data fraction for this epoch if gradual unlocking is enabled
+        if args.enable_gradual_unlocking:
+            data_fraction = get_data_fraction(
+                epoch, args.vae_num_epochs, 
+                args.initial_data_fraction, args.final_data_fraction,
+                args.unlock_schedule, args.unlock_steps
+            )
+            
+            # Get available trajectories for this epoch
+            train_trajectories = get_available_trajectories(replay_buffer, train_split, data_fraction)
+            val_trajectories = get_available_trajectories(replay_buffer, "val", data_fraction)
+            
+            # Sample from the available trajectories
+            train_batch = sample_with_trajectory_subset(replay_buffer, args.vae_batch_size, train_trajectories, args.device)
+            val_batch = sample_with_trajectory_subset(replay_buffer, args.vae_batch_size, val_trajectories, args.device)
+            
+            # Log data fraction
+            writer.add_scalar("vae/data_fraction", data_fraction, epoch)
+            writer.add_scalar("vae/train_trajectories_used", len(train_trajectories), epoch)
+            writer.add_scalar("vae/val_trajectories_used", len(val_trajectories), epoch)
+            
+            if epoch % 10 == 0 or epoch == 0:  # Log every 10 epochs to avoid spam
+                print(f"  Using {data_fraction:.1%} of data ({len(train_trajectories)} train, {len(val_trajectories)} val trajectories)")
+        else:
+            # Use all available data (original behavior)
+            train_batch = replay_buffer.sample2(args.vae_batch_size, split=train_split)
+            val_batch = replay_buffer.sample2(args.vae_batch_size, split="val")
         
         # Debug: Check batch shapes
         if epoch == 0:
@@ -271,7 +429,7 @@ def main():
 
         num_samples = min(args.num_visualization_samples, args.vae_batch_size)
         # Sample some data for visualization
-        sample_batch = replay_buffer.sample2(num_samples, split=train_split)
+        sample_batch = replay_buffer.sample2(num_samples, split="train")
         sample_obs = sample_batch.obs
         
         # Create simple visualizations
@@ -282,12 +440,43 @@ def main():
 
             # Print video of first observation
             print("Rendering first observation as video...")
-            render_observation(sample_obs[0], os.path.join(viz_dir, "first_observation.mp4"), env_id)
+            video.render_observation(sample_obs[0], os.path.join(viz_dir, "first_observation.mp4"), env_id)
             
             # Render comparison video showing original vs reconstructed observations
             print("Rendering comparison video (original vs reconstructed)...")
-            render_observation_comparison(sample_obs, recon, os.path.join(viz_dir, "original_vs_reconstructed.mp4"), env_id, num_samples=5)
-            
+            video.render_observation_comparison(sample_obs, recon, os.path.join(viz_dir, "original_vs_reconstructed.mp4"), env_id, num_samples=5)
+
+            # Visualize latent space
+            umap_mapper = umap.UMAP(
+                n_neighbors=15,
+                min_dist=0.1,
+                metric='cosine',
+                random_state=42
+            )
+
+            try:
+                embedded = umap_mapper.fit_transform(z)
+
+                # Normalize the embedding to improve visualization
+                embedded = (embedded - embedded.min(axis=0)) / (embedded.max(axis=0) - embedded.min(axis=0))
+
+            except Exception as e:
+                print(f"UMAP visualization failed: {str(e)}")
+                return
+
+            # Create plot with improved styling
+            plt.style.use('default')  # Reset to default style
+            fig0 = plt.figure(figsize=(12, 8))
+
+            # Set background color and grid
+            plt.gca().set_facecolor('#f0f0f0')
+            plt.grid(True, linestyle='--', alpha=0.7)
+
+            # First plot all points with lower alpha for context
+            plt.scatter(embedded[:, 0], embedded[:, 1], c='blue', alpha=0.1, s=50)
+            plt.savefig(os.path.join(viz_dir, "latent_space.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig0)
+
             # 1. Latent space visualization (2D scatter plot of first 2 dimensions)
             plt.figure(figsize=(10, 8))
             latent_2d = mu.cpu().numpy()[:, :2]  # Take first 2 dimensions
@@ -373,115 +562,6 @@ def main():
     
     writer.close()
     print("VAE training completed!")
-
-def render_observation_frame(env: Env, obs: th.Tensor):
-    mujoco_env = env.unwrapped
-    is_mujoco = hasattr(mujoco_env, 'set_state') and hasattr(mujoco_env, 'data')
-
-    frames = []
-    if is_mujoco:
-        # Dynamically determine qpos/qvel split
-        model = getattr(mujoco_env, 'model', None)
-        if model is not None and hasattr(model, 'nq') and hasattr(model, 'nv'):
-            nq = model.nq
-            nv = model.nv
-        else:
-            # Fallback: try to infer from data shapes
-            nq = mujoco_env.data.qpos.shape[0]
-            nv = mujoco_env.data.qvel.shape[0]
-        for i in range(len(obs)):
-            obs_i = obs[i].cpu().numpy() if hasattr(obs[i], 'cpu') else np.array(obs[i])
-            qpos = mujoco_env.data.qpos.copy()
-            qvel = mujoco_env.data.qvel.copy()
-            # Try to fill qpos and qvel from obs
-            if obs_i.shape[0] == nq + nv - 1:
-                # Some envs (like HalfCheetah) hide root x (qpos[0])
-                qpos[1:] = obs_i[:nq-1]
-                qvel[:] = obs_i[nq-1:]
-            elif obs_i.shape[0] == nq + nv:
-                # Full state in obs
-                qpos[:] = obs_i[:nq]
-                qvel[:] = obs_i[nq:]
-            else:
-                # Fallback: try to fill as much as possible
-                qpos[:min(nq, obs_i.shape[0])] = obs_i[:min(nq, obs_i.shape[0])]
-            mujoco_env.set_state(qpos, qvel)
-            frame = env.render()
-            frames.append(frame)
-    else:
-        # Non-MuJoCo: just reset and render each obs (best effort)
-        print("Warning: Environment does not support MuJoCo-style state setting. Rendering resets only.")
-        for i in range(len(obs)):
-            env.reset()
-            frame = env.render()
-            frames.append(frame)
-
-    return frames
-
-def render_observation(obs: th.Tensor, save_path: str, env_id: str):
-    """
-    Render a sequence of observations as a video, supporting MuJoCo and non-MuJoCo environments.
-    For MuJoCo envs, sets the state using qpos/qvel. For others, just resets and renders.
-    """
-    import numpy as np
-    env = gym.make(env_id, render_mode="rgb_array")
-    env.reset()
-
-    frames = render_observation_frame(env, obs)
-
-    # Save frames as a video
-    imageio.mimsave(save_path, frames, fps=30, codec="libx264")
-
-def render_observation_comparison(original_obs: th.Tensor, recon_obs: th.Tensor, save_path: str, env_id: str, num_samples: int = 5):
-    """
-    Render a comparison video showing original vs reconstructed observations for multiple samples.
-    Creates a video with num_samples rows, each showing original (left) vs reconstructed (right).
-    """
-    # Limit number of samples to available data
-    num_samples = min(num_samples, original_obs.shape[0], recon_obs.shape[0])
-    
-    env = gym.make(env_id, render_mode="rgb_array")
-    env.reset()
-    
-    # Get trajectory length
-    traj_length = original_obs.shape[1]
-    
-    # For each timestep, create a frame showing all samples side by side
-    frames = []
-    for t in range(traj_length):
-        # Create a list to store frames for each sample
-        sample_frames = []
-        
-        for sample_idx in range(num_samples):
-            # Get original and reconstructed observations for this timestep
-            orig_obs_t = original_obs[sample_idx, t].unsqueeze(0)  # Add batch dimension
-            recon_obs_t = recon_obs[sample_idx, t].unsqueeze(0)   # Add batch dimension
-            
-            # Render original observation
-            orig_frames = render_observation_frame(env, orig_obs_t)
-            orig_frame = orig_frames[0] if orig_frames else env.render()
-            
-            # Render reconstructed observation
-            recon_frames = render_observation_frame(env, recon_obs_t)
-            recon_frame = recon_frames[0] if recon_frames else env.render()
-            
-            # Concatenate original and reconstructed frames horizontally
-            combined_frame = np.concatenate([orig_frame, recon_frame], axis=1)
-            sample_frames.append(combined_frame)
-        
-        # Concatenate all samples vertically
-        if sample_frames:
-            combined_frame = np.concatenate(sample_frames, axis=0)
-            frames.append(combined_frame)
-    
-    # Save frames as a video
-    if frames:
-        imageio.mimsave(save_path, frames, fps=30, codec="libx264")
-        print(f"Comparison video saved to {save_path}")
-    else:
-        print("No frames generated for comparison video")
-    
-    env.close()
 
 if __name__ == "__main__":
     main() 

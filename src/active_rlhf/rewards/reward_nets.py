@@ -1,6 +1,7 @@
 import os
 from typing import List, Optional
 
+from torch.utils.data import Subset, RandomSampler
 from tqdm import tqdm
 import torch as th
 import torch.utils.data as th_data
@@ -264,6 +265,33 @@ class RewardTrainer:
             collate_fn=collate_fn
         )
 
+    def _make_bootstrap_loader(self, buffer: PreferenceBuffer,
+                               device: str = "cuda" if th.cuda.is_available() else "cpu") -> th_data.DataLoader:
+        def collate_fn(batch):
+            # batch is a list of PreferenceBufferBatch objects
+            return PreferenceBufferBatch(
+                first_obs=th.stack([b.first_obs for b in batch]).to(device),
+                first_acts=th.stack([b.first_acts for b in batch]).to(device),
+                first_rews=th.stack([b.first_rews for b in batch]).to(device),
+                first_dones=th.stack([b.first_dones for b in batch]).to(device),
+                second_obs=th.stack([b.second_obs for b in batch]).to(device),
+                second_acts=th.stack([b.second_acts for b in batch]).to(device),
+                second_rews=th.stack([b.second_rews for b in batch]).to(device),
+                second_dones=th.stack([b.second_dones for b in batch]).to(device),
+                prefs=th.stack([b.prefs for b in batch]).to(device),
+            )
+
+        sampler = RandomSampler(buffer,
+                                replacement=True,
+                                num_samples=len(buffer))
+
+        return th_data.DataLoader(
+            buffer,
+            sampler=sampler,
+            batch_size=self.batch_size,
+            collate_fn=collate_fn
+        )
+
     def train(self, train_buffer: PreferenceBuffer, val_buffer: PreferenceBuffer, global_step: int):
         """Train the reward network using batches sampled from the training buffer and validated on the validation buffer.
         
@@ -315,6 +343,14 @@ class RewardTrainer:
                         raw_grad_norm_sum += raw_norm
                         raw_grad_norm_count += 1
                         self.optimizers[i].step()
+
+                        # 1) Ensemble disagreement (std of member returns)
+                        rets = first_rews.sum(1) - second_rews.sum(1)  # shape (B, E)
+                        self.writer.add_scalar("reward/ensemble_std_mean", rets.std(dim=-1).mean(), global_step)
+
+                        # 2) Predicted return gap
+                        gap = (first_rews.sum(1) - second_rews.sum(1)).mean(-1)  # (B,)
+                        self.writer.add_histogram("reward/return_gap", gap, global_step)
                     
                     epoch_train_loss += total_loss.item()
                     num_train_batches += 1
@@ -380,3 +416,78 @@ class RewardTrainer:
         self.writer.add_scalar("reward/raw_grad_norm_mean", raw_grad_norm_sum / raw_grad_norm_count, global_step)
 
         return final_train_loss, final_val_loss, final_reward_accuracy
+
+    def train2(self,
+               train_buffer: PreferenceBuffer,
+               val_buffer: PreferenceBuffer,
+               global_step: int):
+        """
+        Train the ensemble, accumulate *all* batch losses, then log
+        exactly one average per metric at `global_step`.
+        """
+        # ——— Accumulators across all members & epochs ———
+        sum_train_loss = 0.0
+        count_train    = 0
+
+        sum_val_loss   = 0.0
+        sum_acc        = 0.0
+        count_val      = 0
+
+        # fixed validation loader (no replacement)
+        val_loader = self._make_dataloader(val_buffer, self.device)
+
+        for _epoch in tqdm(range(1, self.epochs+1), desc="Training Reward Model"):
+            self.preference_model.train()
+
+            # ——— TRAIN each ensemble member on its own bootstrap sample ———
+            for i, net in enumerate(self.preference_model.ensemble.nets):
+                opt      = self.optimizers[i]
+                loader_i = self._make_bootstrap_loader(train_buffer, self.device)
+
+                for batch in loader_i:
+                    # forward
+                    first_rews  = net(batch.first_obs,  batch.first_acts)
+                    second_rews = net(batch.second_obs, batch.second_acts)
+                    fsum = first_rews .sum(dim=1)
+                    ssum = second_rews.sum(dim=1)
+                    probs = self.preference_model.softmax(
+                        th.stack([fsum, ssum], dim=-1)
+                    )
+
+                    loss = self.preference_model.loss(probs.unsqueeze(1), batch.prefs)
+
+                    # backward + step
+                    opt.zero_grad()
+                    loss.backward()
+                    th.nn.utils.clip_grad_norm_(net.parameters(), self.max_grad_norm)
+                    opt.step()
+
+                    sum_train_loss += loss.item()
+                    count_train    += 1
+
+        # ——— VALIDATION over all val batches (once) ———
+        self.preference_model.eval()
+        with th.no_grad():
+            for batch in val_loader:
+                f_rew, s_rew, probs = self.preference_model(
+                    batch.first_obs,  batch.first_acts,
+                    batch.second_obs, batch.second_acts
+                )
+                loss = self.preference_model.loss(probs, batch.prefs)
+                acc  = self._calculate_reward_accuracy(f_rew, s_rew, batch)
+
+                sum_val_loss += loss.item()
+                sum_acc      += acc
+                count_val    += 1
+
+        # ——— Compute the *overall* averages ———
+        avg_train_loss = sum_train_loss / max(1, count_train)
+        avg_val_loss   = sum_val_loss   / max(1, count_val)
+        avg_acc        = sum_acc        / max(1, count_val)
+
+        # ——— Single log per training step ———
+        self.writer.add_scalar("reward/train_loss", avg_train_loss, global_step)
+        self.writer.add_scalar("reward/val_loss",   avg_val_loss,   global_step)
+        self.writer.add_scalar("reward/accuracy",   avg_acc,        global_step)
+
+        return avg_train_loss, avg_val_loss, avg_acc

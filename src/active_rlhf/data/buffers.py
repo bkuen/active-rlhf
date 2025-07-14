@@ -434,7 +434,7 @@ class ReplayBuffer:
         start_indices = th.tensor(start_indices, device=self.device)
         indices = (start_indices[:, None] + th.arange(self.fragment_length, device=self.device)[None, :])
         
-        # Apply modulo operation to handle circular buffer wrapping
+        # Apply modulo operation to handle circular buffer wrapping (just for test script)
         indices = indices % self.capacity
         
         return ReplayBufferBatch(

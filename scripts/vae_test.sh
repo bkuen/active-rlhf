@@ -9,11 +9,15 @@ python3 src/active_rlhf/scripts/train_vae_on_replay_buffer.py \
   --vae_attention_heads 4 \
   --vae_attention_blocks 2 \
   --vae_dropout 0.0 \
-  --vae_kl_weight 0.0 \
+  --vae_kl_weight 0.001 \
   --vae_weight_decay 1e-5 \
   --vae_lr 1e-3 \
   --vae_batch_size 64 \
   --vae_num_epochs 200 \
   --vae_early_stopping_patience 25 \
   --fragment_length 50 \
-  --create_visualizations True
+  --create_visualizations True \
+  --enable_gradual_unlocking True \
+  --initial_data_fraction 0.05 \
+  --final_data_fraction 1.0 \
+  --unlock_schedule linear

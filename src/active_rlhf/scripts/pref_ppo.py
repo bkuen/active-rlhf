@@ -21,7 +21,7 @@ from active_rlhf.data.dataset import PreferenceDataset
 from active_rlhf.data.running_stats import RunningStat
 from active_rlhf.rewards.reward_nets import PreferenceModel, RewardEnsemble, RewardTrainer
 from active_rlhf.queries.selector import RandomSelector, RandomSelectorSimple
-from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer
+from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer, ConvStateVAE, BetterVAETrainer
 from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 
 
@@ -137,8 +137,12 @@ class Args:
     """learning rate for the VAE"""
     variquery_vae_weight_decay: float = 1e-4
     """weight decay for the VAE"""
-    variquery_vae_batch_size: int = 32
+    variquery_vae_batch_size: int = 1024
     """batch size for VAE training"""
+    variquery_vae_val_batch_size: int = 128
+    """batch size for VAE validation"""
+    variquery_vae_minibatch_size: int = 64
+    """mini-batch size for VAE training"""
     variquery_vae_num_epochs: int = 25
     """number of epochs to train the VAE"""
     variquery_vae_dropout: float = 0.1
@@ -322,6 +326,30 @@ if __name__ == "__main__":
 
     print(f"Query schedule: {query_schedule}")
 
+    vae = ConvStateVAE(
+        state_dim=envs.single_observation_space.shape[0],
+        latent_dim=args.variquery_vae_latent_dim,
+        hidden_dims=args.variquery_vae_hidden_dims,
+        dropout=args.variquery_vae_dropout,
+        device=device,
+        kernel_size=args.variquery_vae_conv_kernel_size,
+        fragment_length=args.fragment_length,
+    )
+
+    vae_trainer = BetterVAETrainer(
+        writer=writer,
+        replay_buffer=replay_buffer,
+        vae=vae,
+        lr=args.variquery_vae_lr,
+        weight_decay=args.variquery_vae_weight_decay,
+        batch_size=args.variquery_vae_batch_size,
+        num_epochs=args.variquery_vae_num_epochs,
+        kl_weight_beta=args.variquery_vae_kl_weight,
+        kl_warmup_steps=args.variquery_vae_kl_warmup_steps,
+        total_steps=args.total_timesteps,
+        noise_sigma=args.variquery_vae_noise_sigma,
+    )
+
     # Initialize selector
     match args.selector_type:
         case "random":
@@ -333,6 +361,7 @@ if __name__ == "__main__":
                 reward_norm=reward_norm,
                 reward_ensemble=reward_ensemble,
                 preference_model=preference_model,
+                vae=vae,
                 vae_state_dim=envs.single_observation_space.shape[0],
                 fragment_length=args.fragment_length,
                 vae_latent_dim=args.variquery_vae_latent_dim,
@@ -471,6 +500,9 @@ if __name__ == "__main__":
             # Sample from replay buffer to get trajectory pairs
             num_pairs = args.queries_per_session if next_query_step != 0 else 32
 
+            if args.selector_type == "variquery":
+                vae_trainer.train(global_step)
+
             if args.sampling_strategy == "uniform":
                 train_samples = replay_buffer.sample2(int(num_pairs * args.oversampling_factor))
                 replay_buffer.log_trajectory_statistics(writer, global_step)
@@ -584,7 +616,7 @@ if __name__ == "__main__":
             # Train reward network if we have enough samples
             if len(train_preference_buffer) > 0 and len(val_preference_buffer) > 0:
                 try:
-                    reward_trainer.train(train_preference_buffer, val_preference_buffer, global_step)
+                    reward_trainer.train2(train_preference_buffer, val_preference_buffer, global_step)
                 except ValueError as e:
                     print(f"Warning: {e}. Skipping reward network training for this iteration.")
                     os.exit(1)
