@@ -923,7 +923,7 @@ class BetterVAETrainer:
                 ReplayBufferDataset(train_dataset),
                 batch_size=self.minibatch_size,
                 shuffle=True,
-                pin_memory=True,
+                pin_memory=False,
             )
 
             for train_batch in train_loader:
