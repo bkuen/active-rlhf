@@ -307,21 +307,21 @@ class VARIQuerySelector(Selector):
         #     global_step=global_step,
         # )
 
-        vis_obs = torch.stack([
-            train_batch.obs[top_first_indices[0]],
-            train_batch.obs[top_second_indices[0]],
-            train_batch.obs[top_first_indices[1]],
-            train_batch.obs[top_second_indices[1]]
-        ], dim=0)
-
-        with th.no_grad():
-            vis_obs_latent, _, _ = self.vae.encode(vis_obs)
-            vis_obs_recon = self.vae.decode(vis_obs_latent)
-
-        # Step 7: Visualize VAE reconstructions
-        vis_save_path = os.path.join(self.writer.log_dir, f"visualizations/original_vs_reconstructed_{global_step}.mp4")
-        os.makedirs(os.path.dirname(vis_save_path), exist_ok=True)
-        video.render_observation_comparison(vis_obs, vis_obs_recon, save_path=vis_save_path, env_id=self.env_id, num_samples=len(vis_obs))
+        # vis_obs = torch.stack([
+        #     train_batch.obs[top_first_indices[0]],
+        #     train_batch.obs[top_second_indices[0]],
+        #     train_batch.obs[top_first_indices[1]],
+        #     train_batch.obs[top_second_indices[1]]
+        # ], dim=0)
+        #
+        # with th.no_grad():
+        #     vis_obs_latent, _, _ = self.vae.encode(vis_obs)
+        #     vis_obs_recon = self.vae.decode(vis_obs_latent)
+        #
+        # # Step 7: Visualize VAE reconstructions
+        # vis_save_path = os.path.join(self.writer.log_dir, f"visualizations/original_vs_reconstructed_{global_step}.mp4")
+        # os.makedirs(os.path.dirname(vis_save_path), exist_ok=True)
+        # video.render_observation_comparison(vis_obs, vis_obs_recon, save_path=vis_save_path, env_id=self.env_id, num_samples=len(vis_obs))
 
         return TrajectoryPairBatch(
             first_obs=train_batch.obs[top_first_indices],
