@@ -505,7 +505,7 @@ if __name__ == "__main__":
             num_pairs = args.queries_per_session if next_query_step != 0 else 32
 
             if args.selector_type == "variquery":
-                vae_trainer.train2(global_step)
+                vae_trainer.train(global_step)
 
             if args.sampling_strategy == "uniform":
                 train_samples = replay_buffer.sample2(int(num_pairs * args.oversampling_factor))
