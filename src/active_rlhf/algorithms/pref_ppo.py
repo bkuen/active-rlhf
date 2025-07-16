@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Tuple, TypedDict
+
+import scipy
 import torch as th
 import torch.nn as nn
 from gymnasium.vector import SyncVectorEnv
@@ -245,6 +247,17 @@ class AgentTrainer:
             obs = rollout_sample.obs.reshape((-1,) + self.envs.single_observation_space.shape)
             acts = rollout_sample.actions.reshape((-1,) + self.envs.single_action_space.shape)
             raw_rewards = self.reward_ensemble.mean_reward(obs, acts).unsqueeze(-1)
+
+            gt_ret = rollout_sample.ground_truth_rewards.sum(dim=1).cpu().numpy()
+            pred_ret = raw_rewards.sum(dim=1).cpu().numpy()
+
+            # --- 2. Pearson & Spearman ----------------------------
+            pearson = np.corrcoef(gt_ret, pred_ret)[0, 1]
+            spearman = scipy.stats.spearmanr(gt_ret, pred_ret).correlation
+
+            self.writer.add_scalar("debug/corr_pearson", pearson, global_step)
+            self.writer.add_scalar("debug/corr_spearman", spearman, global_step)
+
             self.reward_norm.update(raw_rewards)
             rewards = self.reward_norm.normalize(raw_rewards)
             # rewards = 5 * th.tanh(rewards / 5)
@@ -255,6 +268,14 @@ class AgentTrainer:
 
             self.writer.add_scalar("debug/reward_mean", rewards.mean(), global_step)
             self.writer.add_scalar("debug/reward_std", rewards.std(), global_step)
+            self.writer.add_scalar("debug/reward_min", rewards.min(), global_step)
+            self.writer.add_scalar("debug/reward_max", rewards.max(), global_step)
+            self.writer.add_scalar("debug/ground_truth_reward_min", rollout_sample.ground_truth_rewards.min(), global_step)
+            self.writer.add_scalar("debug/ground_truth_reward_max", rollout_sample.ground_truth_rewards.max(), global_step)
+            self.writer.add_scalar("debug/ground_truth_reward_mean", rollout_sample.ground_truth_rewards.mean(), global_step)
+            self.writer.add_scalar("debug/ground_truth_reward_std", rollout_sample.ground_truth_rewards.std(), global_step)
+            self.writer.add_scalar("debug/reward_diff_mean", (rollout_sample.ground_truth_rewards - rewards).mean(), global_step)
+            self.writer.add_scalar("debug/reward_diff_std", (rollout_sample.ground_truth_rewards - rewards).std(), global_step)
 
             next_value = self.agent.get_value(self.next_obs).reshape(1, -1)
             advantages = th.zeros_like(rewards).to(self.device)

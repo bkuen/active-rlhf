@@ -1,6 +1,7 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppo_continuous_actionpy
 import os
 import random
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import List, Literal, Optional
@@ -494,18 +495,13 @@ if __name__ == "__main__":
         # With 0.1 probability, we put the rollout into the validation set
         replay_buffer.add_rollout(rollout_sample, split='val' if random.random() < 0.1 else "train")
 
-        # Update policy
-        metrics = agent_trainer.update_policy(rollout_sample=rollout_sample, num_steps=args.num_steps, global_step=global_step)
-
-        global_step += args.num_envs * args.num_steps
+        if args.selector_type == "variquery":
+            vae_trainer.train(global_step)
 
         # Train reward network if next step is in query schedule. Be careful as we might overstep the query schedule.
         if next_query_step < len(query_schedule) and global_step >= query_schedule[next_query_step]:
             # Sample from replay buffer to get trajectory pairs
             num_pairs = args.queries_per_session if next_query_step != 0 else 32
-
-            if args.selector_type == "variquery":
-                vae_trainer.train(global_step)
 
             if args.sampling_strategy == "uniform":
                 train_samples = replay_buffer.sample2(int(num_pairs * args.oversampling_factor))
@@ -620,12 +616,18 @@ if __name__ == "__main__":
             # Train reward network if we have enough samples
             if len(train_preference_buffer) > 0 and len(val_preference_buffer) > 0:
                 try:
-                    reward_trainer.train(train_preference_buffer, val_preference_buffer, global_step)
+                    reward_trainer.train2(train_preference_buffer, val_preference_buffer, global_step)
                 except ValueError as e:
                     print(f"Warning: {e}. Skipping reward network training for this iteration.")
-                    os.exit(1)
+                    sys.exit(1)
 
             next_query_step += 1
+
+        # Update policy
+        metrics = agent_trainer.update_policy(rollout_sample=rollout_sample, num_steps=args.num_steps,
+                                              global_step=global_step)
+
+        global_step += args.num_envs * args.num_steps
 
         # Log metrics
         writer.add_scalar("charts/learning_rate", agent_trainer.optimizer.param_groups[0]["lr"], global_step)

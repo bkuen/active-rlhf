@@ -1,12 +1,12 @@
 poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
-  --exp-name="variquery_v2" \
+  --exp-name="vari_v2" \
   --seed=4 \
   --torch-deterministic=True \
   --cuda=True \
   --track=True \
-  --wandb-project-name="active-rlhf-tests-halfcheetah" \
+  --wandb-project-name="active-rlhf-tests-halfcheetah-v2" \
   --wandb-entity="bkuen-ludwig-maximilianuniversity-of-munich" \
-  --wandb-tags "variquery_v2" \
+  --wandb-tags "vari_v2" \
   --capture-video=False \
   --save-model=True \
   --upload-model=False \
@@ -24,13 +24,13 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --norm-adv=True \
   --clip-coef=0.2 \
   --clip-vloss=True \
-  --ent-coef=0.0 \
+  --ent-coef=1e-3 \
   --vf-coef=0.5 \
   --max-grad-norm=0.5 \
   --target-kl=None \
   --replay-buffer-capacity=1000000 \
   --reward-net-epochs=5 \
-  --reward-net-lr=3e-4 \
+  --reward-net-lr=1e-4 \
   --reward-net-weight-decay=1e-4 \
   --reward-net-max-grad-norm=1.0 \
   --reward-net-batch-size=32 \
@@ -42,23 +42,23 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --query-schedule="linear" \
   --total-queries=1000 \
   --queries-per-session=20 \
-  --selector-type="variquery" \
+  --selector-type="duo" \
   --sampling-strategy="uniform" \
   --oversampling-factor=10.0 \
-  --fragment-length=50 \
-  --variquery-vae-latent-dim=16 \
+  --fragment-length=25 \
+  --variquery-vae-latent-dim=32 \
   --variquery-vae-hidden-dims 128 64 32 \
   --variquery-vae-lr=1e-3 \
-  --variquery-vae-weight-decay=1e-5 \
-  --variquery-vae-batch-size=4096 \
-  --variquery-vae-val-batch-size=512 \
-  --variquery-vae-minibatch-size=512 \
-  --variquery-vae-num-epochs=4 \
-  --variquery-vae-kl-warmup-epochs=40 \
-  --variquery_vae_kl_warmup_steps=50 \
+  --variquery-vae-weight-decay=1e-4 \
+  --variquery-vae-batch-size=1024 \
+  --variquery-vae-val-batch-size=256 \
+  --variquery-vae-minibatch-size=128 \
+  --variquery-vae-num-epochs=1 \
+  --variquery-vae-kl-warmup-epochs=2 \
+  --variquery_vae_kl_warmup_steps=2 \
   --variquery_vae_early_stopping_patience=20 \
   --variquery-vae-dropout=0.0 \
-  --variquery-vae-kl-weight=0.0 \
+  --variquery-vae-kl-weight=1e-4 \
   --variquery-vae-conv-kernel-size 5 \
   --variquery-vae-attention-dim=128 \
   --variquery-vae-attention-heads=4 \

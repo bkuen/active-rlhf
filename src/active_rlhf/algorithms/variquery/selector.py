@@ -4,11 +4,12 @@ from typing import List, Tuple, Optional
 import torch
 import umap
 from matplotlib import pyplot as plt
+from matplotlib.patches import ConnectionPatch
 
 from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer, GRUStateVAE, AttnStateVAE, \
     EnhancedGRUStateVAE, MLPStateSkipVAE, ConvStateVAE
 from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, SpectralClustering
 from sklearn.metrics import silhouette_score
 
 from active_rlhf.data.running_stats import RunningStat
@@ -168,7 +169,7 @@ class VARIQuerySelector(Selector):
             recon_states = self.vae.decode(latent_states)
 
         # Step 3: Cluster and sample pairs
-        clusters = self._cluster_latent_space(latent_states=latent_states, num_clusters=self.cluster_size, global_step=global_step)
+        clusters = self._cluster_latent_space_knn(latent_states=latent_states, num_clusters=self.cluster_size, global_step=global_step)
 
         # Step 4: Sample pairs
         first_indices, second_indices = self._sample_random_pair_indices(clusters=clusters, num_pairs=batch_size//2)
@@ -177,8 +178,19 @@ class VARIQuerySelector(Selector):
         # Step 5: Rank by uncertainty estimate
         with th.no_grad():
             rewards = self.reward_ensemble(train_batch.obs, train_batch.acts)
+            # rewards = rewards.mean(dim=-1).sum(dim=-1)  # Aggregate rewards over time steps
         #     # rewards_norm = self.reward_norm(rewards)
         # ranked_pair_indices = self._rank_pairs(rewards, first_indices, second_indices).to(self.device)
+
+        mean_rewards = rewards.mean(dim=-1)  # Mean rewards over ensemble dimension
+        returns = mean_rewards.sum(dim=-1) # Sum over time steps to get total return
+        avg_return = returns.mean(dim=0)
+        max_return = returns.max(dim=0)
+        min_return = returns.min(dim=0)
+
+        self.writer.add_scalar("variquery2/avg_return", avg_return.item(), global_step)
+        self.writer.add_scalar("variquery2/max_return", max_return.values.item(), global_step)
+        self.writer.add_scalar("variquery2/min_return", min_return.values.item(), global_step)
 
         # Alternative: Use DUO uncertainty estimation
         with th.no_grad():
@@ -295,6 +307,9 @@ class VARIQuerySelector(Selector):
         self.writer.add_figure('variquery2/kl_div_per_latent_dim', fig5, global_step)
         plt.close(fig5)
 
+        # Visualize latent space and clusters
+        self._plot_latent_clusters(latent_states, clusters, top_first_indices, top_second_indices, global_step=global_step)
+
         # Step 6: Visualize latent space and clusters
         # returns = rewards.mean(dim=-1).sum(dim=-1)
         # self.visualizer.visualize(
@@ -333,6 +348,63 @@ class VARIQuerySelector(Selector):
             second_rews=train_batch.rews[top_second_indices],
             second_dones=train_batch.dones[top_second_indices]
         )
+
+    def _cluster_latent_space_knn(
+            self,
+            latent_states: th.Tensor,
+            num_clusters: int,
+            global_step: int,
+            neighbor_options: List[int] = (5, 10, 20, 30)
+    ) -> List[List[int]]:
+        """
+        Cluster the latent representations by testing multiple k-NN graph densities.
+        For each n_neighbors in neighbor_options, build the k-NN affinity, run
+        spectral clustering, compute silhouette score, and pick the best setting.
+        """
+
+        # 1. Prepare data
+        X = latent_states.detach().cpu().numpy()
+        X = (X - X.mean(axis=0)) / X.std(axis=0)
+
+        best_score = -1.0
+        best_n = neighbor_options[0]
+        best_labels = None
+
+        # 2. Loop over different neighbor counts
+        for n in neighbor_options:
+            # Ensure n is valid
+            n_eff = min(n, X.shape[0] - 1)
+
+            spectral = SpectralClustering(
+                n_clusters=num_clusters,
+                affinity='nearest_neighbors',
+                n_neighbors=n_eff,
+                assign_labels='kmeans',
+                random_state=42
+            )
+            labels = spectral.fit_predict(X)
+
+            # Evaluate
+            score = silhouette_score(X, labels)
+            # Log silhouette for this neighbor setting
+            self.writer.add_scalar(f"variquery2/silhouette_score_knn_n{n_eff}", score, global_step)
+
+            # Track best
+            if score > best_score:
+                best_score = score
+                best_n = n_eff
+                best_labels = labels
+
+        # 3. Log the chosen n_neighbors
+        self.writer.add_scalar("variquery2/best_n_neighbors", best_n, global_step)
+        self.writer.add_scalar("variquery2/best_silhouette_score", best_score, global_step)
+
+        # 4. Group indices by the best clustering
+        clusters: List[List[int]] = [[] for _ in range(num_clusters)]
+        for idx, lbl in enumerate(best_labels):
+            clusters[lbl].append(idx)
+
+        return clusters
 
     def _cluster_latent_space(self, latent_states: th.Tensor, num_clusters: int, global_step: int) -> List[List[int]]:
         latent_states = latent_states.detach().cpu().numpy()
@@ -389,8 +461,148 @@ class VARIQuerySelector(Selector):
         sorted_indices = th.argsort(uncertainties, descending=True)
         
         return sorted_indices
-        
-        
+
+    def _plot_latent_clusters(self,
+                             latents: th.Tensor,
+                             clusters: List[List[int]],
+                             first_indices: th.Tensor,
+                             second_indices: th.Tensor,
+                             global_step: int):
+        """Plot and save UMAP visualization of latent clusters.
+
+        Args:
+            latents: Tensor of latents
+            clusters: List of latent cluster indices
+            first_indices: Indices of first trajectories in pairs
+            second_indices: Indices of second trajectories in pairs
+            global_step: Current training step for file naming
+        """
+        # Convert to numpy and normalize
+        latent_vectors = latents.cpu().numpy()
+        n_samples = latent_vectors.shape[0]
+
+        # Normalize vectors
+        norms = np.linalg.norm(latent_vectors, axis=1, keepdims=True)
+        normalized_vectors = latent_vectors / (norms + 1e-8)
+
+        # Skip visualization if too few samples
+        if n_samples < 4:
+            print(f"Warning: Too few samples ({n_samples}) for meaningful UMAP visualization")
+            return
+
+        # Create UMAP embedding
+        umap_mapper = umap.UMAP(
+            n_neighbors=15,
+            min_dist=0.1,
+            metric='cosine',
+            random_state=42
+        )
+
+        try:
+            embedded = umap_mapper.fit_transform(normalized_vectors)
+
+            # Normalize the embedding to improve visualization
+            embedded = (embedded - embedded.min(axis=0)) / (embedded.max(axis=0) - embedded.min(axis=0))
+
+        except Exception as e:
+            print(f"UMAP visualization failed: {str(e)}")
+            return
+
+        # Create plot with improved styling
+        plt.style.use('default')  # Reset to default style
+        plt.figure(figsize=(12, 8))
+
+        # Set background color and grid
+        plt.gca().set_facecolor('#f0f0f0')
+        plt.grid(True, linestyle='--', alpha=0.7)
+
+        # Plot each cluster with different colors and improved visibility
+        colors = ['#1f77b4', '#2ca02c', '#ff7f0e', '#d62728', '#9467bd',
+                  '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']  # Better color palette
+
+        # First plot all points with lower alpha for context
+        plt.scatter(embedded[:, 0], embedded[:, 1], c='gray', alpha=0.1, s=50)
+
+        # Then plot clusters
+        for cluster_idx, cluster in enumerate(clusters):
+            if not cluster:  # Skip empty clusters
+                continue
+            cluster_points = embedded[cluster]
+            plt.scatter(
+                cluster_points[:, 0],
+                cluster_points[:, 1],
+                alpha=0.6,
+                c=[colors[cluster_idx % len(colors)]],
+                label=f'Cluster {cluster_idx} (n={len(cluster)})',
+                s=100,  # Larger point size
+                edgecolors='white',  # White edges for better visibility
+                linewidth=0.5
+            )
+
+        # Draw connection patches between paired indices
+        # Convert indices to numpy arrays if they're tensors
+        first_indices = first_indices.cpu().numpy() if isinstance(first_indices, th.Tensor) else first_indices
+        second_indices = second_indices.cpu().numpy() if isinstance(second_indices, th.Tensor) else second_indices
+
+        # Draw curved arrows between pairs
+        for idx1, idx2 in zip(first_indices, second_indices):
+            try:
+                # Create curved arrow between pairs
+                con = ConnectionPatch(
+                    xyA=(embedded[idx1, 0], embedded[idx1, 1]),
+                    xyB=(embedded[idx2, 0], embedded[idx2, 1]),
+                    coordsA="data", coordsB="data",
+                    axesA=plt.gca(), axesB=plt.gca(),
+                    arrowstyle="-",
+                    connectionstyle="arc3,rad=0.2",
+                    edgecolor='red',
+                    alpha=0.5,
+                    linewidth=1.5
+                )
+                plt.gca().add_patch(con)
+
+                # Highlight selected points
+                plt.scatter(
+                    [embedded[idx1, 0], embedded[idx2, 0]],
+                    [embedded[idx1, 1], embedded[idx2, 1]],
+                    c='red',
+                    s=150,
+                    alpha=0.8,
+                    zorder=5,
+                    edgecolors='white',
+                    linewidth=0.5
+                )
+            except (IndexError, ValueError) as e:
+                print(f"Warning: Could not plot pair due to invalid index: {str(e)}")
+                continue
+
+        # Improve title and labels
+        plt.title(f'Latent Space Clusters with Paired Connections (n_samples={n_samples})',
+                  pad=20, fontsize=12, fontweight='bold')
+        plt.xlabel('UMAP Component 1', fontsize=10)
+        plt.ylabel('UMAP Component 2', fontsize=10)
+
+        # Improve legend
+        legend = plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left',
+                            borderaxespad=0., frameon=True, fancybox=True, shadow=True)
+        legend.get_frame().set_facecolor('white')
+        legend.get_frame().set_alpha(0.8)
+
+        # Set figure background color
+        plt.gcf().patch.set_facecolor('white')
+
+        # Add a border around the plot
+        plt.gca().spines['top'].set_visible(True)
+        plt.gca().spines['right'].set_visible(True)
+        plt.gca().spines['bottom'].set_visible(True)
+        plt.gca().spines['left'].set_visible(True)
+
+        plt.tight_layout()  # Adjust layout to prevent label clipping
+
+        # Log to tensorboard
+        self.writer.add_figure('variquery2/vae_clusters', plt.gcf(), global_step)
+
+        plt.close()
         
 
         
