@@ -4,7 +4,7 @@ import random
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Annotated
 
 from active_rlhf.algorithms.duo.selector import DUOSelector
 from active_rlhf.algorithms.hybrid.selector import HybridSelector
@@ -14,7 +14,9 @@ from active_rlhf.algorithms.variquery.selector import VARIQuerySelector
 import gymnasium as gym
 import numpy as np
 import torch as th
+import json
 import tyro
+from tyro.conf import arg
 from torch.utils.tensorboard import SummaryWriter
 
 from active_rlhf.data.buffers import ReplayBuffer, PreferenceBuffer, PreferenceBufferBatch
@@ -25,6 +27,9 @@ from active_rlhf.queries.selector import RandomSelector, RandomSelectorSimple
 from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer, ConvStateVAE, BetterVAETrainer
 from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 
+def _parse_dims(s: str) -> List[int]:
+    # split on whitespace and turn each piece into an int
+    return [int(x) for x in s.split()]
 
 @dataclass
 class Args:
@@ -106,7 +111,11 @@ class Args:
     """the mini-batch size of the reward network"""
     reward_net_ensemble_size: int = 3
     """the number of ensemble members in the reward network"""
-    reward_net_hidden_dims: List[int] = field(default_factory=lambda: [256, 256, 256])
+    # reward_net_hidden_dims: List[int] = field(default_factory=lambda: [256, 256, 256])
+    reward_net_hidden_dims: Annotated[
+        List[int],
+        arg(constructor=json.loads, name="reward-net-hidden-dims")
+    ] = (256, 256, 256)
     """the hidden dimensions of the reward network"""
     reward_net_dropout: float = 0.0
     """the dropout rate of the reward network"""
@@ -132,7 +141,10 @@ class Args:
     # VARIQuery specific arguments
     variquery_vae_latent_dim: int = 32
     """dimension of the VAE latent space"""
-    variquery_vae_hidden_dims: List[int] = field(default_factory=lambda: [128, 64, 32])
+    variquery_vae_hidden_dims: Annotated[
+        List[int],
+        arg(constructor=json.loads, name="variquery_vae_hidden_dims")
+    ] = (128, 64, 32)
     """hidden dimensions of the VAE encoder/decoder"""
     variquery_vae_lr: float = 1e-3
     """learning rate for the VAE"""
@@ -233,6 +245,10 @@ def make_env(env_id, idx, capture_video, run_name, gamma):
 
 if __name__ == "__main__":
     args = tyro.cli(Args, config=(tyro.conf.FlagConversionOff,))
+
+    print("Reward net dims: ", args.reward_net_hidden_dims)
+    print("VAE net dims: ", args.variquery_vae_hidden_dims)
+
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
