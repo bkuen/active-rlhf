@@ -418,6 +418,7 @@ if __name__ == "__main__":
             selector = HybridSelector(
                 writer=writer,
                 reward_ensemble=reward_ensemble,
+                vae=vae,
                 fragment_length=args.fragment_length,
                 vae_state_dim=envs.single_observation_space.shape[0],
                 vae_latent_dim=args.variquery_vae_latent_dim,
@@ -511,7 +512,8 @@ if __name__ == "__main__":
         # With 0.1 probability, we put the rollout into the validation set
         replay_buffer.add_rollout(rollout_sample, split='val' if random.random() < 0.1 else "train")
 
-        if args.selector_type == "variquery":
+        if (args.selector_type == "variquery" or
+                args.selector_type == "hybrid"):
             vae_trainer.train(global_step)
 
         # Train reward network if next step is in query schedule. Be careful as we might overstep the query schedule.
