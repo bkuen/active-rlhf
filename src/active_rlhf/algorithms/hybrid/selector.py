@@ -6,13 +6,15 @@ import torch as th
 from torch.utils.tensorboard import SummaryWriter
 
 from active_rlhf.queries.selector import Selector, RandomSelector
-from active_rlhf.rewards.reward_nets import RewardEnsemble
+from active_rlhf.queries.uncertainty import estimate_epistemic_uncertainties
+from active_rlhf.rewards.reward_nets import RewardEnsemble, PreferenceModel
 
 
 class HybridSelector(Selector):
     def __init__(self,
                  writer: SummaryWriter,
                  reward_ensemble: RewardEnsemble,
+                 preference_model: PreferenceModel,
                  vae: ConvStateVAE,
                  vae_state_dim: int,
                  fragment_length: int = 50,
@@ -32,10 +34,11 @@ class HybridSelector(Selector):
                  total_steps: int = 1_000_000,
                  gamma_z: float = 0.1,
                  gamma_r: float = 0.1,
-                 beta: float = 0.3, # balance between latent and reward similarity
+                 beta: float = 0.5, # balance between latent and reward similarity
                  device: str = "cuda" if th.cuda.is_available() else "cpu"
                  ):
         self.writer = writer
+        self.preference_model = preference_model
         self.reward_ensemble = reward_ensemble
         self.vae = vae
         self.fragment_length = fragment_length
@@ -126,6 +129,21 @@ class HybridSelector(Selector):
         Z2 = th.cdist(z_i, z_j, p=2) ** 2 # (batch_size, batch_size)
         R2 = th.cdist(r_i, r_j, p=2) ** 2 # (batch_size, batch_size)
 
+        with th.no_grad():
+            _, _, probs = self.preference_model(
+                candidate_pairs.first_obs,
+                candidate_pairs.first_acts,
+                candidate_pairs.second_obs,
+                candidate_pairs.second_acts
+            )
+        # θ_i = P(σ1 ≻ σ0) per ensemble member; epistemic_uncertainty shape: (batch_size,)
+        u = estimate_epistemic_uncertainties(probs, alpha=0.0)  # your function
+
+        # normalize uncertainties into [ε, 1]
+        u_min, u_max = u.min(), u.max()
+        eps = 1e-6
+        q = (u - u_min) / (u_max - u_min + eps) + eps  # (batch_size,)
+
         gamma_z = HybridSelector.gamma_median(z_i)  # after z-scoring
         gamma_r = HybridSelector.gamma_median(r_i)  # after z-scoring returns
 
@@ -133,14 +151,22 @@ class HybridSelector(Selector):
         self.writer.add_scalar("hybrid/gamma_r", gamma_r, global_step)
 
         # Compute the DPP kernel matrix
-        # Lz = th.exp(-gamma_z * Z2)
-        # Lr = th.exp(-gamma_r * R2)
-        # L = (1.0 - self.beta) * Lz + self.beta * Lr
+        Lz = th.exp(-gamma_z * Z2)
+        Lr = th.exp(-gamma_r * R2)
+        K = (1.0 - self.beta) * Lz + self.beta * Lr
 
         # L-ensemble kernel
-        L = th.exp(-self.gamma_z * Z2 - self.gamma_r * R2)
+        # L = th.exp(-self.gamma_z * Z2 - self.gamma_r * R2)
 
-        # add tiny, scale-aware jitter for numerical PSD safety
+        self.writer.add_scalar("hybrid/weighted_Lz_mean", (1.0 - self.beta) * Lz.mean(), global_step)
+        self.writer.add_scalar("hybrid/weighted_Lr_mean", self.beta * Lr.mean(), global_step)
+
+        # 3) form the quality–diversity kernel L = diag(q) @ K @ diag(q)
+        # equivalently: L_ij = q_i * K_ij * q_j
+        q_outer = q.unsqueeze(1) * q.unsqueeze(0)  # (batch, batch)
+        L = K * q_outer
+
+        # 4) jitter for PSD safety
         # diag_mean = L.diagonal().mean()
         # L += 1e-8 * diag_mean  * th.eye(batch_size, device=L.device, dtype=L.dtype)
 

@@ -418,6 +418,7 @@ if __name__ == "__main__":
             selector = HybridSelector(
                 writer=writer,
                 reward_ensemble=reward_ensemble,
+                preference_model=preference_model,
                 vae=vae,
                 fragment_length=args.fragment_length,
                 vae_state_dim=envs.single_observation_space.shape[0],
