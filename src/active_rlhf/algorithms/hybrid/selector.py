@@ -106,8 +106,15 @@ class HybridSelector(Selector):
             z_i, _, _ = self.vae.encode(candidate_pairs.first_obs)
             z_j, _, _ = self.vae.encode(candidate_pairs.second_obs)
             # r_i, r_j: (batch_size, fragment_length, ensemble_size)
-            r_i = self.reward_ensemble(candidate_pairs.first_obs, candidate_pairs.first_acts)
-            r_j = self.reward_ensemble(candidate_pairs.second_obs, candidate_pairs.second_acts)
+            # r_i = self.reward_ensemble(candidate_pairs.first_obs, candidate_pairs.first_acts)
+            # r_j = self.reward_ensemble(candidate_pairs.second_obs, candidate_pairs.second_acts)
+
+            r_i, r_j, probs = self.preference_model(
+                candidate_pairs.first_obs,
+                candidate_pairs.first_acts,
+                candidate_pairs.second_obs,
+                candidate_pairs.second_acts
+            )
 
         # Mean rewards over ensemble dimension: r_i, r_j: (batch_size, fragment_length)
         r_i = r_i.mean(dim=-1)
@@ -129,20 +136,19 @@ class HybridSelector(Selector):
         Z2 = th.cdist(z_i, z_j, p=2) ** 2 # (batch_size, batch_size)
         R2 = th.cdist(r_i, r_j, p=2) ** 2 # (batch_size, batch_size)
 
-        with th.no_grad():
-            _, _, probs = self.preference_model(
-                candidate_pairs.first_obs,
-                candidate_pairs.first_acts,
-                candidate_pairs.second_obs,
-                candidate_pairs.second_acts
-            )
         # θ_i = P(σ1 ≻ σ0) per ensemble member; epistemic_uncertainty shape: (batch_size,)
         u = estimate_epistemic_uncertainties(probs, alpha=0.0)  # your function
 
         # normalize uncertainties into [ε, 1]
         u_min, u_max = u.min(), u.max()
         eps = 1e-6
-        q = (u - u_min) / (u_max - u_min + eps) + eps  # (batch_size,)
+        q_norm = (u - u_min) / (u_max - u_min + eps) + eps  # (batch_size,)
+
+        min_q = 0.5  # your choice; e.g. 0.3–0.7
+        q = q_norm * (1.0 - min_q) + min_q
+
+        self.writer.add_scalar("hybrid/mean_q", q.mean(), global_step)
+        self.writer.add_scalar("hybrid/std_q", q.std(), global_step)
 
         gamma_z = HybridSelector.gamma_median(z_i)  # after z-scoring
         gamma_r = HybridSelector.gamma_median(r_i)  # after z-scoring returns
@@ -165,6 +171,17 @@ class HybridSelector(Selector):
         # equivalently: L_ij = q_i * K_ij * q_j
         q_outer = q.unsqueeze(1) * q.unsqueeze(0)  # (batch, batch)
         L = K * q_outer
+
+        ratio = (L.mean() / (K.mean() + 1e-8))
+        self.writer.add_scalar("hybrid/mean_L_over_K", ratio, global_step)
+
+        trace_ratio = (L.diagonal().sum() / (K.diagonal().sum() + 1e-8))
+        self.writer.add_scalar("hybrid/trace_ratio", trace_ratio, global_step)
+
+        eigs_K = th.linalg.eigvalsh(K)  # or top‑k only
+        eigs_L = th.linalg.eigvalsh(L)
+        self.writer.add_scalar("hybrid/top_eig_K", eigs_K[-1], global_step)
+        self.writer.add_scalar("hybrid/top_eig_L", eigs_L[-1], global_step)
 
         # 4) jitter for PSD safety
         # diag_mean = L.diagonal().mean()
@@ -194,6 +211,9 @@ class HybridSelector(Selector):
             selected.extend([list(remaining)[i] for i in additional])
         else:
             self.writer.add_scalar("hybrid/num_additional_pairs", 0, global_step)
+
+        selected_q = q[selected]
+        self.writer.add_scalar("hybrid/mean_q_selected", selected_q.mean(), global_step)
 
         return candidate_pairs[selected]
 
