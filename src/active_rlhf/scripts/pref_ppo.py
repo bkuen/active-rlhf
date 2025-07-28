@@ -194,6 +194,10 @@ class Args:
     """the gamma_r parameter for the DPP in the hybrid selector"""
     hybrid_dpp_beta: float = 0.3
     """the beta parameter for the DPP in the hybrid selector, balancing latent and reward similarity"""
+    hybrid_dpp_min_q: float = 0.5
+    """lower-bound for quality (uncertainty weight (0‒1)"""
+    hybrid_dpp_temp_q: float = 1.0
+    """temperature for quality (uncertainty weight), (>0). <1 sharpens, >1 flattens (robust to outliers)"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -438,6 +442,8 @@ if __name__ == "__main__":
                 gamma_z=args.hybrid_dpp_gamma_z,
                 gamma_r=args.hybrid_dpp_gamma_r,
                 beta=args.hybrid_dpp_beta,
+                min_q=args.hybrid_dpp_min_q,
+                temp_q=args.hybrid_dpp_temp_q,
                 device=device,
             )
         case "hybrid2":

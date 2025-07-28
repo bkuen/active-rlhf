@@ -35,6 +35,8 @@ class HybridSelector(Selector):
                  gamma_z: float = 0.1,
                  gamma_r: float = 0.1,
                  beta: float = 0.5, # balance between latent and reward similarity
+                 min_q: float = 0.5,  # lower-bound for quality weight (0‒1)
+                 temp_q: float = 1.0,  # “temperature” (>0). <1 sharpens, >1 flattens
                  device: str = "cuda" if th.cuda.is_available() else "cpu"
                  ):
         self.writer = writer
@@ -60,6 +62,8 @@ class HybridSelector(Selector):
         self.gamma_z = gamma_z
         self.gamma_r = gamma_r
         self.beta = beta  # balance between latent and reward similarity
+        self.min_q = min_q
+        self.temp_q = temp_q
         self.device = device
 
         self.random_selector = RandomSelector()
@@ -137,16 +141,20 @@ class HybridSelector(Selector):
         R2 = th.cdist(r_i, r_j, p=2) ** 2 # (batch_size, batch_size)
 
         # θ_i = P(σ1 ≻ σ0) per ensemble member; epistemic_uncertainty shape: (batch_size,)
-        u = estimate_epistemic_uncertainties(probs, alpha=0.0)  # your function
-
-        # normalize uncertainties into [ε, 1]
+        u = estimate_epistemic_uncertainties(probs, alpha=0.0)  # (batch,)
         u_min, u_max = u.min(), u.max()
         eps = 1e-6
-        q_norm = (u - u_min) / (u_max - u_min + eps) + eps  # (batch_size,)
+        q_norm = (u - u_min) / (u_max - u_min + eps)  # → [0,1]
 
-        min_q = 0.5  # your choice; e.g. 0.3–0.7
-        q = q_norm * (1.0 - min_q) + min_q
+        # Temperature (optional): q_norm**temp_q, then re-normalise
+        if self.temp_q != 1.0:
+            q_norm = q_norm.pow(1.0 / self.temp_q)
 
+        # Linear map onto [min_q, 1]
+        q = self.min_q + (1.0 - self.min_q) * q_norm  # (batch,)
+
+        self.writer.add_scalar("hybrid/min_q", self.min_q, global_step)
+        self.writer.add_scalar("hybrid/temp_q", self.temp_q, global_step)
         self.writer.add_scalar("hybrid/mean_q", q.mean(), global_step)
         self.writer.add_scalar("hybrid/std_q", q.std(), global_step)
 

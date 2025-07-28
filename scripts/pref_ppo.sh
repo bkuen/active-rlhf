@@ -1,12 +1,12 @@
 poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
-  --exp-name="vari_v2" \
-  --seed=4 \
+  --exp-name="hybrid_v1" \
+  --seed=1 \
   --torch-deterministic=True \
   --cuda=True \
   --track=True \
   --wandb-project-name="active-rlhf-tests-halfcheetah-v2" \
   --wandb-entity="bkuen-ludwig-maximilianuniversity-of-munich" \
-  --wandb-tags "vari_v2" \
+  --wandb-tags "hybrid_v1" \
   --capture-video=False \
   --save-model=True \
   --upload-model=False \
@@ -37,17 +37,17 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --reward-net-minibatch-size=32 \
   --reward-net-ensemble-size=3 \
   --reward-net-dropout=0.1 \
-  --reward-net-hidden-dims 256 256 256 \
+  --reward-net-hidden-dims "[256, 256, 256]" \
   --reward_net_val_split=0.2 \
   --query-schedule="linear" \
-  --total-queries=1000 \
-  --queries-per-session=20 \
-  --selector-type="duo" \
+  --total-queries=500 \
+  --queries-per-session=10 \
+  --selector-type="hybrid" \
   --sampling-strategy="uniform" \
   --oversampling-factor=10.0 \
   --fragment-length=25 \
   --variquery-vae-latent-dim=32 \
-  --variquery-vae-hidden-dims 128 64 32 \
+  --variquery-vae-hidden-dims "[128, 64, 32]" \
   --variquery-vae-lr=1e-3 \
   --variquery-vae-weight-decay=1e-4 \
   --variquery-vae-batch-size=1024 \
@@ -70,4 +70,6 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --hybrid_dpp_gamma_z=1.0 \
   --hybrid_dpp_gamma_r=1.0 \
   --hybrid_dpp_beta=0.5 \
+  --hybrid_dpp_min_q=0.5 \
+  --hybrid_dpp_temp_q=1.5 \
   --save_replay_buffer=True
