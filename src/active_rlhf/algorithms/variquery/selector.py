@@ -1,28 +1,19 @@
-import os
-from typing import List, Tuple, Optional
-
-import torch
-import umap
-from matplotlib import pyplot as plt
-from matplotlib.patches import ConnectionPatch
-
-from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer, GRUStateVAE, AttnStateVAE, \
-    EnhancedGRUStateVAE, MLPStateSkipVAE, ConvStateVAE
-from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
-from sklearn.cluster import KMeans, SpectralClustering
-from sklearn.metrics import silhouette_score
-
-from active_rlhf.data.running_stats import RunningStat
-from active_rlhf.queries.uncertainty import estimate_uncertainties, estimate_epistemic_uncertainties
-from active_rlhf.rewards.reward_nets import RewardEnsemble, PreferenceModel
-import numpy as np
-import torch as th
-
+from active_rlhf.algorithms.variquery.vae import ConvStateVAE
 from active_rlhf.data.buffers import TrajectoryPairBatch, ReplayBufferBatch
 from active_rlhf.queries.selector import Selector
-from torch.utils.tensorboard import SummaryWriter
-
+from active_rlhf.queries.uncertainty import estimate_uncertainties, estimate_epistemic_uncertainties
+from active_rlhf.rewards.reward_nets import RewardEnsemble, PreferenceModel
 from active_rlhf.video import video
+from matplotlib import pyplot as plt
+from matplotlib.patches import ConnectionPatch
+import numpy as np
+import os
+from sklearn.cluster import KMeans, SpectralClustering
+from sklearn.metrics import silhouette_score
+import torch as th
+from torch.utils.tensorboard import SummaryWriter
+from typing import List, Tuple
+import umap
 
 
 class VARIQuerySelector(Selector):
@@ -32,155 +23,38 @@ class VARIQuerySelector(Selector):
                  writer: SummaryWriter,
                  reward_ensemble: RewardEnsemble,
                  preference_model: PreferenceModel,
-                 reward_norm: RunningStat,
                  vae: ConvStateVAE,
-                 vae_state_dim: int,
-                 fragment_length: int = 50,
-                 vae_latent_dim: int = 16,
-                 vae_hidden_dims: List[int] = [128, 64, 32],
-                 vae_lr: float = 1e-3,
-                 vae_weight_decay: float = 1e-4,
-                 vae_dropout: float = 0.1,
-                 vae_batch_size: int = 32,
-                 vae_num_epochs: int = 25,
-                 vae_kl_weight: float = 1.0,
-                 vae_kl_warmup_epochs: int = 40,
-                 vae_kl_warmup_steps: int = 320_000,
-                 vae_early_stopping_patience: Optional[int] = None,
-                 vae_conv_kernel_size: int = 5,
-                 vae_attn_dim: int = 128,
-                 vae_attn_heads: int = 4,
-                 vae_attn_blocks: int = 2,
-                 vae_decoder_layers: int = 2,
-                 vae_noise_sigma: float = 0.0,
-                 total_steps: int = 1_000_000,
                  cluster_size: int = 10,
-                 env_id: str = "HalfCheetah-v4",
+                 capture_video: bool = False,
+                 env_id: str = "HalfCheetah-v5",
                  device: str = "cuda" if th.cuda.is_available() else "cpu"
                  ):
         self.writer = writer
         self.reward_ensemble = reward_ensemble
         self.preference_model = preference_model
-        self.reward_norm = reward_norm
-        self.fragment_length = fragment_length
         self.vae = vae
-        self.vae_state_dim = vae_state_dim
-        self.vae_latent_dim = vae_latent_dim
-        self.vae_hidden_dims = vae_hidden_dims
-        self.vae_lr = vae_lr
-        self.vae_weight_decay = vae_weight_decay
-        self.vae_dropout = vae_dropout
-        self.vae_batch_size = vae_batch_size
-        self.vae_num_epochs = vae_num_epochs
-        self.vae_kl_weight = vae_kl_weight
-        self.vae_kl_warmup_epochs = vae_kl_warmup_epochs
-        self.vae_kl_warmup_steps = vae_kl_warmup_steps
-        self.vae_early_stopping_patience = vae_early_stopping_patience
-        self.vae_conv_kernel_size = vae_conv_kernel_size
-        self.vae_attn_dim = vae_attn_dim
-        self.vae_attn_heads = vae_attn_heads
-        self.vae_attn_blocks = vae_attn_blocks
-        self.vae_decoder_layers = vae_decoder_layers
-        self.vae_noise_sigma = vae_noise_sigma
         self.cluster_size = cluster_size
-        self.total_steps = total_steps
+        self.capture_video = capture_video
         self.env_id = env_id
         self.device = device
 
-        # self.vae = (MLPStateSkipVAE(
-        #     state_dim=vae_state_dim,
-        #     latent_dim=self.vae_latent_dim,
-        #     fragment_length=self.fragment_length,
-        #     hidden_dims=self.vae_hidden_dims,
-        #     dropout=self.vae_dropout,
-        # ))
-
-        # self.vae = ConvStateVAE(
-        #     state_dim=vae_state_dim,
-        #     latent_dim=vae_latent_dim,
-        #     hidden_dims=vae_hidden_dims,
-        #     dropout=vae_dropout,
-        #     device=device,
-        #     kernel_size=vae_conv_kernel_size,
-        #     # padding=args.vae_conv_padding,
-        #     fragment_length=fragment_length,
-        # )
-
-        # self.vae = AttnStateVAE(
-        #     state_dim=vae_state_dim,
-        #     latent_dim=self.vae_latent_dim,
-        #     fragment_length=self.fragment_length,
-        #     # hidden_dims=vae_hidden_dims,
-        #     # dropout=self.vae_dropout,
-        #     attn_dim=vae_attn_dim,
-        #     n_heads=vae_attn_heads,
-        #     n_blocks=vae_attn_blocks,
-        #     n_decoder_layers=vae_decoder_layers,
-        #     attn_dropout=vae_dropout,
-        #     device=device,
-        # )
-
-        # self.vae_trainer = VAETrainer(
-        #     vae=self.vae,
-        #     lr=self.vae_lr,
-        #     weight_decay=self.vae_weight_decay,
-        #     kl_warmup_epochs=self.vae_kl_warmup_epochs,
-        #     kl_warmup_steps=self.vae_kl_warmup_steps,
-        #     batch_size=self.vae_batch_size,
-        #     num_epochs=self.vae_num_epochs,
-        #     early_stopping_patience=self.vae_early_stopping_patience,
-        #     noise_sigma=self.vae_noise_sigma,
-        #     total_steps=self.total_steps,
-        #     device=self.device
-        # )
-
-        self.visualizer = VAEVisualizer(writer=writer)
-        
-
     def select_pairs(self, train_batch: ReplayBufferBatch, val_batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
         batch_size = train_batch.obs.shape[0]
-        # self.vae = (MLPStateSkipVAE(
-        #     state_dim=self.vae_state_dim,
-        #     latent_dim=self.vae_latent_dim,
-        #     fragment_length=self.fragment_length,
-        #     hidden_dims=self.vae_hidden_dims,
-        #     dropout=self.vae_dropout,
-        # ))
-        #
-        # self.vae_trainer = VAETrainer(
-        #     vae=self.vae,
-        #     lr=self.vae_lr,
-        #     weight_decay=self.vae_weight_decay,
-        #     kl_warmup_epochs=self.vae_kl_warmup_epochs,
-        #     kl_warmup_steps=self.vae_kl_warmup_steps,
-        #     batch_size=self.vae_batch_size,
-        #     num_epochs=self.vae_num_epochs,
-        #     early_stopping_patience=self.vae_early_stopping_patience,
-        #     noise_sigma=self.vae_noise_sigma,
-        #     total_steps=self.total_steps,
-        #     device=self.device
-        # )
-
-        # Step 2: Train VAE and encode states
-        # metrics = self.vae_trainer.train(train_batch, val_batch, global_step)
 
         with th.no_grad():
             latent_states, mu, logvar = self.vae.encode(train_batch.obs)
             recon_states = self.vae.decode(latent_states)
 
-        # Step 3: Cluster and sample pairs
+        # Cluster and sample pairs
         clusters = self._cluster_latent_space_knn(latent_states=latent_states, num_clusters=self.cluster_size, global_step=global_step)
 
-        # Step 4: Sample pairs
+        # Sample pairs
         first_indices, second_indices = self._sample_random_pair_indices(clusters=clusters, num_pairs=batch_size//2)
         assert len(first_indices) == len(second_indices)
 
-        # Step 5: Rank by uncertainty estimate
+        # Rank by uncertainty estimate
         with th.no_grad():
             rewards = self.reward_ensemble(train_batch.obs, train_batch.acts)
-            # rewards = rewards.mean(dim=-1).sum(dim=-1)  # Aggregate rewards over time steps
-        #     # rewards_norm = self.reward_norm(rewards)
-        # ranked_pair_indices = self._rank_pairs(rewards, first_indices, second_indices).to(self.device)
 
         mean_rewards = rewards.mean(dim=-1)  # Mean rewards over ensemble dimension
         returns = mean_rewards.sum(dim=-1) # Sum over time steps to get total return
@@ -192,7 +66,7 @@ class VARIQuerySelector(Selector):
         self.writer.add_scalar("variquery2/max_return", max_return.values.item(), global_step)
         self.writer.add_scalar("variquery2/min_return", min_return.values.item(), global_step)
 
-        # Alternative: Use DUO uncertainty estimation
+        # Use the same uncertainty estimation like in DUO
         with th.no_grad():
             first_rews, second_rews, probs = self.preference_model(
                 train_batch.obs[first_indices],
@@ -211,8 +85,6 @@ class VARIQuerySelector(Selector):
         # Visualizations
 
         num_show = 5
-
-        # 0. Log latent states
 
         # Visualize latent space
         umap_mapper = umap.UMAP(
@@ -247,7 +119,7 @@ class VARIQuerySelector(Selector):
         except Exception as e:
             print(f"UMAP visualization failed: {str(e)}")
 
-        # 1. 2D Scatter: wrap your matplotlib figure
+        # 2D Scatter: wrap your matplotlib figure
         latent_data = mu.cpu().numpy()
         latent_2d = latent_data[:, :2]
         fig, ax = plt.subplots(figsize=(6, 6))
@@ -257,8 +129,7 @@ class VARIQuerySelector(Selector):
         self.writer.add_figure('variquery2/latent_space_scatter2d', fig, global_step)
         plt.close(fig)
 
-        # 2. Heatmap: log the matplotlib figure
-
+        # Heatmap: log the matplotlib figure
         fig2 = plt.figure(figsize=(12, 8))
         plt.imshow(latent_data.T, aspect='auto', cmap='viridis')
         plt.colorbar(label='Latent Value')
@@ -266,12 +137,8 @@ class VARIQuerySelector(Selector):
         plt.ylabel('Latent Dimension')
         self.writer.add_figure('variquery2/latent_space_heatmap', fig2, global_step)
         plt.close(fig2)
-        # fig2, ax2 = plt.subplots(...)
-        # ax2.imshow(latent_data.T, aspect='auto', cmap='viridis')
-        # writer.add_figure('latent_space/heatmap_matplotlib', fig2, global_step)
-        # plt.close(fig2)
 
-        # 3. Reconstructions: stack originals & recons into a single figure
+        # Reconstructions: stack originals & recons into a single figure
         fig3, axes = plt.subplots(num_show, 2, figsize=(8, 2 * num_show))
         for i in range(num_show):
             axes[i, 0].plot(train_batch.obs[i].cpu())
@@ -282,7 +149,7 @@ class VARIQuerySelector(Selector):
         self.writer.add_figure('variquery2/reconstructions_comparison', fig3, global_step)
         plt.close(fig3)
 
-        # 4. Reconstruction Error Distribution
+        # Reconstruction Error Distribution
         # you can log the raw array as a histogram:
         recon_error = (train_batch.obs - recon_states).abs().cpu().numpy()
         fig4 = plt.figure(figsize=(10, 6))
@@ -294,8 +161,7 @@ class VARIQuerySelector(Selector):
         self.writer.add_figure('variquery2/reconstruction_error_distribution', fig4, global_step)
         plt.close(fig4)
 
-        # 5. KL per dimension
-        # Approach A: histogram of per-dim KLs
+        # KL per dimension: histogram of per-dim KLs
         kl_per_dim = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
         kl_per_dim_mean = kl_per_dim.mean(dim=0).cpu().numpy()
         fig5 = plt.figure(figsize=(10, 6))
@@ -310,33 +176,22 @@ class VARIQuerySelector(Selector):
         # Visualize latent space and clusters
         self._plot_latent_clusters(latent_states, clusters, top_first_indices, top_second_indices, global_step=global_step)
 
-        # Step 6: Visualize latent space and clusters
-        # returns = rewards.mean(dim=-1).sum(dim=-1)
-        # self.visualizer.visualize(
-        #     metrics=metrics,
-        #     latents=latent_states,
-        #     rewards=returns,
-        #     first_indices=top_first_indices,
-        #     second_indices=top_second_indices,
-        #     clusters=clusters,
-        #     global_step=global_step,
-        # )
+        if self.capture_video:
+            vis_obs = th.stack([
+                train_batch.obs[top_first_indices[0]],
+                train_batch.obs[top_second_indices[0]],
+                train_batch.obs[top_first_indices[1]],
+                train_batch.obs[top_second_indices[1]]
+            ], dim=0)
 
-        # vis_obs = torch.stack([
-        #     train_batch.obs[top_first_indices[0]],
-        #     train_batch.obs[top_second_indices[0]],
-        #     train_batch.obs[top_first_indices[1]],
-        #     train_batch.obs[top_second_indices[1]]
-        # ], dim=0)
-        #
-        # with th.no_grad():
-        #     vis_obs_latent, _, _ = self.vae.encode(vis_obs)
-        #     vis_obs_recon = self.vae.decode(vis_obs_latent)
-        #
-        # # Step 7: Visualize VAE reconstructions
-        # vis_save_path = os.path.join(self.writer.log_dir, f"visualizations/original_vs_reconstructed_{global_step}.mp4")
-        # os.makedirs(os.path.dirname(vis_save_path), exist_ok=True)
-        # video.render_observation_comparison(vis_obs, vis_obs_recon, save_path=vis_save_path, env_id=self.env_id, num_samples=len(vis_obs))
+            with th.no_grad():
+                vis_obs_latent, _, _ = self.vae.encode(vis_obs)
+                vis_obs_recon = self.vae.decode(vis_obs_latent)
+
+            # Step 7: Visualize VAE reconstructions
+            vis_save_path = os.path.join(self.writer.log_dir, f"visualizations/original_vs_reconstructed_{global_step}.mp4")
+            os.makedirs(os.path.dirname(vis_save_path), exist_ok=True)
+            video.render_observation_comparison(vis_obs, vis_obs_recon, save_path=vis_save_path, env_id=self.env_id, num_samples=len(vis_obs))
 
         return TrajectoryPairBatch(
             first_obs=train_batch.obs[top_first_indices],
@@ -448,19 +303,6 @@ class VARIQuerySelector(Selector):
             second_indices.append(index2)
 
         return th.tensor(first_indices, device=self.device), th.tensor(second_indices, device=self.device)
-    
-    def _rank_pairs(self, rewards: th.Tensor, first_indices: th.Tensor, second_indices: th.Tensor) -> th.Tensor:
-        uncertainties = estimate_uncertainties(
-            rewards=rewards,
-            first_indices=first_indices,
-            second_indices=second_indices,
-            method="return_diff"
-        )
-        
-        # Sort indices based on uncertainty values in descending order
-        sorted_indices = th.argsort(uncertainties, descending=True)
-        
-        return sorted_indices
 
     def _plot_latent_clusters(self,
                              latents: th.Tensor,

@@ -383,32 +383,10 @@ if __name__ == "__main__":
             # Initialize VARIQuery selector
             selector = VARIQuerySelector(
                 writer=writer,
-                reward_norm=reward_norm,
                 reward_ensemble=reward_ensemble,
                 preference_model=preference_model,
                 vae=vae,
-                vae_state_dim=envs.single_observation_space.shape[0],
-                fragment_length=args.fragment_length,
-                vae_latent_dim=args.variquery_vae_latent_dim,
-                vae_hidden_dims=args.variquery_vae_hidden_dims,
-                vae_lr=args.variquery_vae_lr,
-                vae_weight_decay=args.variquery_vae_weight_decay,
-                vae_dropout=args.variquery_vae_dropout,
-                vae_batch_size=args.variquery_vae_batch_size,
-                vae_num_epochs=args.variquery_vae_num_epochs,
-                vae_kl_weight=args.variquery_vae_kl_weight,
-                vae_kl_warmup_epochs=args.variquery_vae_kl_warmup_epochs,
-                vae_kl_warmup_steps=args.variquery_vae_kl_warmup_steps,
-                vae_early_stopping_patience=args.variquery_vae_early_stopping_patience,
-                vae_conv_kernel_size=args.variquery_vae_conv_kernel_size,
-                vae_attn_dim=args.variquery_vae_attention_dim,
-                vae_attn_heads=args.variquery_vae_attention_heads,
-                vae_attn_blocks=args.variquery_vae_attention_blocks,
-                vae_decoder_layers=args.variquery_vae_decoder_layers,
-                vae_noise_sigma=args.variquery_vae_noise_sigma,
-                total_steps=args.total_timesteps,
                 cluster_size=args.variquery_cluster_size,
-                device=device,
             )
         case "duo":
             selector = DUOSelector(
