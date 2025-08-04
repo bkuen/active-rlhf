@@ -1,0 +1,175 @@
+program: src/active_rlhf/scripts/pref_ppo.py
+method: bayes
+entity: bkuen-ludwig-maximilianuniversity-of-munich
+project: prefppo-variquery-tuning
+metric:
+  name: charts/episodic_return
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 4000
+
+parameters:
+  # — Sweep variables (VariQuery‑VAE) —
+  variquery_vae_lr:
+    distribution: log_uniform_values
+    min: !!float 1e-4
+    max: !!float 1e-2
+
+  variquery_vae_weight_decay:
+    distribution: log_uniform_values
+    min: !!float 1e-6
+    max: !!float 1e-4
+
+  variquery_vae_latent_dim:
+    values: [16, 32, 64]
+
+  variquery_vae_batch_size:
+    values: [1024, 2048, 4096]
+
+  variquery_vae_minibatch_size:
+    values: [128, 256, 512]
+
+  variquery_vae_dropout:
+    values: [0.0, 0.1, 0.2]
+
+  variquery_vae_kl_weight:
+    distribution: log_uniform_values
+    min: !!float 1e-5
+    max: !!float 1e-3
+
+  variquery_vae_hidden_dims:
+    values:
+      - "[64, 32]"
+      - "[128, 64, 32]"
+      - "[256, 128, 64]"
+
+  variquery_vae_noise_sigma:
+    values: [0.0, 0.01, 0.05, 0.1]
+
+  variquery_cluster_size:
+    values: [5, 8, 10, 12]
+
+  # — Fixed “best from Sweep A” parameters —
+  exp_name:
+    value: "variquery_vae_sweep"
+  seed:
+    value: 42
+  torch_deterministic:
+    value: true
+  cuda:
+    value: true
+  track:
+    value: true
+  wandb_project_name:
+    value: "prefppo-variquery-tuning"
+  wandb_entity:
+    value: "bkuen-ludwig-maximilianuniversity-of-munich"
+  wandb_tags:
+    value: "variquery"
+  capture_video:
+    value: false
+  save_model:
+    value: true
+  upload_model:
+    value: false
+  hf_entity:
+    value: ""
+  env_id:
+    value: HalfCheetah-v5
+
+  total_timesteps:
+    value: 1000000
+  learning_rate:
+    value: 0.0005
+  gamma:
+    value: 0.98
+  gae_lambda:
+    value: 0.9
+  clip_coef:
+    value: 0.3
+  ent_coef:
+    value: 0.0006
+  vf_coef:
+    value: 0.35
+  anneal_lr:
+    value: true
+  norm_adv:
+    value: true
+  max_grad_norm:
+    value: 0.5
+  clip_vloss:
+    value: true
+  target_kl:
+    value: None
+  replay_buffer_capacity:
+    value: 1000000
+
+  reward_net_epochs:
+    value: 5
+  reward_net_lr:
+    value: 0.00008
+  reward_net_weight_decay:
+    value: 0.00001
+  reward_net_dropout:
+    value: 0.1
+  reward_net_hidden_dims:
+    value: "[256,256,256]"
+  reward_net_batch_size:
+    value: 32
+  reward_net_minibatch_size:
+    value: 32
+  reward_net_ensemble_size:
+    value: 3
+  reward_net_val_split:
+    value: 0.2
+
+  selector_type:
+    value: "variquery"
+  query_schedule:
+    value: "linear"
+  total_queries:
+    value: 500
+  queries_per_session:
+    value: 10
+  sampling_strategy:
+    value: "uniform"
+  oversampling_factor:
+    value: 10.0
+  fragment_length:
+    value: 50
+
+  # — Fixed VAE defaults —
+  variquery_vae_num_epochs:
+    value: 1
+  variquery_vae_val_batch_size:
+    value: 256
+  variquery_vae_kl_warmup_epochs:
+    value: 2
+  variquery_vae_kl_warmup_steps:
+    value: 2
+  variquery_vae_early_stopping_patience:
+    value: 20
+  variquery_vae_conv_kernel_size:
+    value: 5
+  variquery_vae_attention_dim:
+    value: 128
+  variquery_vae_attention_heads:
+    value: 4
+  variquery_vae_attention_blocks:
+    value: 4
+  variquery_vae_decoder_layers:
+    value: 2
+
+  # — Other fixed settings —
+  duo_consensual_filter:
+    value: false
+  hybrid_dpp_gamma_z:
+    value: 1.0
+  hybrid_dpp_gamma_r:
+    value: 1.0
+  hybrid_dpp_beta:
+    value: 0.5
+  save_replay_buffer:
+    value: true

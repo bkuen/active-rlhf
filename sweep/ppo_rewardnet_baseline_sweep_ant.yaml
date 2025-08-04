@@ -22,7 +22,7 @@ parameters:
   gae_lambda:
     values: [0.8, 0.9, 0.95]
   clip_coef:
-    values: [0.1, 0.2, 0.3]
+    values: [0.1, 0.2, 0.3, 0.4]
   ent_coef:
     distribution: log_uniform_values
     min: !!float 1e-4
@@ -49,9 +49,10 @@ parameters:
     values: [0.0, 0.1, 0.2]
   reward_net_hidden_dims:
     values:
-      - "[128, 128, 128]"
       - "[256, 256]"
       - "[256, 256, 256]"
+      - "[512, 512]"
+      - "[512, 512, 512]"
   reward_net_batch_size:
     values: [32, 64, 128]
 
@@ -81,7 +82,7 @@ parameters:
   hf_entity:
     value: ""
   env_id:
-    value: Hopper-v5
+    value: Ant-v5
   total_timesteps:
     value: 1000000
   num_envs:
@@ -106,9 +107,9 @@ parameters:
   query_schedule:
     value: "linear"
   total_queries:
-    value: 500
+    value: 1000
   queries_per_session:
-    value: 10
+    value: 20
   sampling_strategy:
     value: "uniform"
   oversampling_factor:
