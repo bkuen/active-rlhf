@@ -1,7 +1,7 @@
 from active_rlhf.algorithms.variquery.vae import ConvStateVAE
 from active_rlhf.data.buffers import TrajectoryPairBatch, ReplayBufferBatch
 from active_rlhf.queries.selector import Selector
-from active_rlhf.queries.uncertainty import estimate_uncertainties, estimate_epistemic_uncertainties
+from active_rlhf.queries.uncertainty import estimate_epistemic_uncertainties
 from active_rlhf.rewards.reward_nets import RewardEnsemble, PreferenceModel
 from active_rlhf.video import video
 from matplotlib import pyplot as plt
