@@ -1,30 +1,27 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppo_continuous_actionpy
-import os
-import random
-import sys
-import time
-from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Annotated
-
+from active_rlhf.data.buffers import ReplayBuffer, PreferenceBuffer, PreferenceBufferBatch
+from active_rlhf.data.running_stats import RunningStat
 from active_rlhf.algorithms.duo.selector import DUOSelector
 from active_rlhf.algorithms.hybrid.selector import HybridSelector
 from active_rlhf.algorithms.pref_ppo import Agent, AgentTrainer
 from active_rlhf.algorithms.variquery.selector import VARIQuerySelector
+from active_rlhf.algorithms.variquery.vae import ConvStateVAE, BetterVAETrainer
+from active_rlhf.queries.selector import RandomSelector
+from active_rlhf.rewards.reward_nets import PreferenceModel, RewardEnsemble, RewardTrainer
+from dataclasses import dataclass, field
 import gymnasium as gym
-import numpy as np
-import torch as th
 import json
+import numpy as np
+import os
+import random
+import sys
+import time
+import torch as th
+from torch.utils.tensorboard import SummaryWriter
+from typing import List, Literal, Optional, Annotated
 import tyro
 from tyro.conf import arg
-from torch.utils.tensorboard import SummaryWriter
 
-from active_rlhf.data.buffers import ReplayBuffer, PreferenceBuffer, PreferenceBufferBatch
-from active_rlhf.data.dataset import PreferenceDataset
-from active_rlhf.data.running_stats import RunningStat
-from active_rlhf.rewards.reward_nets import PreferenceModel, RewardEnsemble, RewardTrainer
-from active_rlhf.queries.selector import RandomSelector, RandomSelectorSimple
-from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer, ConvStateVAE, BetterVAETrainer
-from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 
 def _parse_dims(s: str) -> List[int]:
     # split on whitespace and turn each piece into an int

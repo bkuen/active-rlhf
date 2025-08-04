@@ -1,5 +1,4 @@
 from active_rlhf.algorithms.variquery.vae import ConvStateVAE
-from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 from active_rlhf.data.buffers import ReplayBufferBatch, TrajectoryPairBatch
 from active_rlhf.queries.selector import Selector, RandomSelector
 from active_rlhf.queries.uncertainty import estimate_epistemic_uncertainties
@@ -33,7 +32,6 @@ class HybridSelector(Selector):
         self.temp_q = temp_q
 
         self.random_selector = RandomSelector()
-        self.visualizer = VAEVisualizer(writer=writer)
 
 
     def select_pairs(self, train_batch: ReplayBufferBatch, val_batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
