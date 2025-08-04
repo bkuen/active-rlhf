@@ -8,7 +8,6 @@ from typing import List, Literal, Optional, Annotated
 
 from active_rlhf.algorithms.duo.selector import DUOSelector
 from active_rlhf.algorithms.hybrid.selector import HybridSelector
-from active_rlhf.algorithms.hybrid2.selector import HybridV2Selector
 from active_rlhf.algorithms.pref_ppo import Agent, AgentTrainer
 from active_rlhf.algorithms.variquery.selector import VARIQuerySelector
 import gymnasium as gym
@@ -129,7 +128,7 @@ class Args:
     """the total number of queries to send to the teacher"""
     queries_per_session: int = 10
     """the number of queries to send to the teacher per session"""
-    selector_type: Literal["random", "variquery", "duo", "hybrid", "hybrid2"] = "random"
+    selector_type: Literal["random", "variquery", "duo", "hybrid"] = "random"
     """type of selector to use for query selection"""
     sampling_strategy: Literal["uniform", "priority"] = "uniform"
     """the sampling strategy from the replay buffer for the selector"""
@@ -407,29 +406,6 @@ if __name__ == "__main__":
                 beta=args.hybrid_dpp_beta,
                 min_q=args.hybrid_dpp_min_q,
                 temp_q=args.hybrid_dpp_temp_q,
-            )
-        case "hybrid2":
-            selector = HybridV2Selector(
-                writer=writer,
-                preference_model=preference_model,
-                vae_state_dim=envs.single_observation_space.shape[0],
-                fragment_length=args.fragment_length,
-                vae_latent_dim=args.variquery_vae_latent_dim,
-                vae_hidden_dims=args.variquery_vae_hidden_dims,
-                vae_lr=args.variquery_vae_lr,
-                vae_weight_decay=args.variquery_vae_weight_decay,
-                vae_dropout=args.variquery_vae_dropout,
-                vae_batch_size=args.variquery_vae_batch_size,
-                vae_num_epochs=args.variquery_vae_num_epochs,
-                vae_kl_weight=args.variquery_vae_kl_weight,
-                vae_kl_warmup_epochs=args.variquery_vae_kl_warmup_epochs,
-                vae_kl_warmup_steps=args.variquery_vae_kl_warmup_steps,
-                vae_early_stopping_patience=args.variquery_vae_early_stopping_patience,
-                oversampling_factor=args.oversampling_factor,
-                vae_noise_sigma=args.variquery_vae_noise_sigma,
-                total_steps=args.total_timesteps,
-                cluster_size=args.variquery_cluster_size,
-                device=device,
             )
         case _:
             raise ValueError(f"Unknown selector type: {args.selector_type}")
