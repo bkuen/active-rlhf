@@ -1,13 +1,11 @@
-from typing import List, Optional
-from active_rlhf.algorithms.variquery.vae import MLPStateVAE, VAETrainer, MLPStateSkipVAE, ConvStateVAE
+from active_rlhf.algorithms.variquery.vae import ConvStateVAE
 from active_rlhf.algorithms.variquery.visualizer import VAEVisualizer
 from active_rlhf.data.buffers import ReplayBufferBatch, TrajectoryPairBatch
-import torch as th
-from torch.utils.tensorboard import SummaryWriter
-
 from active_rlhf.queries.selector import Selector, RandomSelector
 from active_rlhf.queries.uncertainty import estimate_epistemic_uncertainties
 from active_rlhf.rewards.reward_nets import RewardEnsemble, PreferenceModel
+import torch as th
+from torch.utils.tensorboard import SummaryWriter
 
 
 class HybridSelector(Selector):
@@ -16,80 +14,27 @@ class HybridSelector(Selector):
                  reward_ensemble: RewardEnsemble,
                  preference_model: PreferenceModel,
                  vae: ConvStateVAE,
-                 vae_state_dim: int,
-                 fragment_length: int = 50,
                  oversampling_factor: float = 10.0,
-                 vae_latent_dim: int = 16,
-                 vae_hidden_dims: List[int] = [128, 64, 32],
-                 vae_lr: float = 1e-3,
-                 vae_weight_decay: float = 1e-4,
-                 vae_dropout: float = 0.1,
-                 vae_batch_size: int = 32,
-                 vae_num_epochs: int = 25,
-                 vae_kl_weight: float = 1.0,
-                 vae_kl_warmup_epochs: int = 40,
-                 vae_kl_warmup_steps: int = 320_000,
-                 vae_early_stopping_patience: Optional[int] = None,
-                 vae_noise_sigma: float = 0.0,
-                 total_steps: int = 1_000_000,
                  gamma_z: float = 0.1,
                  gamma_r: float = 0.1,
                  beta: float = 0.5, # balance between latent and reward similarity
                  min_q: float = 0.5,  # lower-bound for quality weight (0‒1)
                  temp_q: float = 1.0,  # “temperature” (>0). <1 sharpens, >1 flattens
-                 device: str = "cuda" if th.cuda.is_available() else "cpu"
                  ):
         self.writer = writer
         self.preference_model = preference_model
         self.reward_ensemble = reward_ensemble
         self.vae = vae
-        self.fragment_length = fragment_length
         self.oversampling_factor = oversampling_factor
-        self.vae_state_dim = vae_state_dim
-        self.vae_latent_dim = vae_latent_dim
-        self.vae_hidden_dims = vae_hidden_dims
-        self.vae_lr = vae_lr
-        self.vae_weight_decay = vae_weight_decay
-        self.vae_dropout = vae_dropout
-        self.vae_batch_size = vae_batch_size
-        self.vae_num_epochs = vae_num_epochs
-        self.vae_kl_weight = vae_kl_weight
-        self.vae_kl_warmup_epochs = vae_kl_warmup_epochs
-        self.vae_kl_warmup_steps = vae_kl_warmup_steps
-        self.vae_early_stopping_patience = vae_early_stopping_patience
-        self.vae_noise_sigma = vae_noise_sigma
-        self.total_steps = total_steps
         self.gamma_z = gamma_z
         self.gamma_r = gamma_r
         self.beta = beta  # balance between latent and reward similarity
         self.min_q = min_q
         self.temp_q = temp_q
-        self.device = device
 
         self.random_selector = RandomSelector()
         self.visualizer = VAEVisualizer(writer=writer)
 
-        # self.vae = MLPStateSkipVAE(
-        #     state_dim=vae_state_dim,
-        #     latent_dim=self.vae_latent_dim,
-        #     fragment_length=self.fragment_length,
-        #     hidden_dims=self.vae_hidden_dims,
-        #     dropout=self.vae_dropout,
-        # )
-        #
-        # self.vae_trainer = VAETrainer(
-        #     vae=self.vae,
-        #     lr=self.vae_lr,
-        #     weight_decay=self.vae_weight_decay,
-        #     kl_warmup_epochs=self.vae_kl_warmup_epochs,
-        #     kl_warmup_steps=self.vae_kl_warmup_steps,
-        #     batch_size=self.vae_batch_size,
-        #     num_epochs=self.vae_num_epochs,
-        #     early_stopping_patience=self.vae_early_stopping_patience,
-        #     noise_sigma=self.vae_noise_sigma,
-        #     total_steps=self.total_steps,
-        #     device=self.device
-        # )
 
     def select_pairs(self, train_batch: ReplayBufferBatch, val_batch: ReplayBufferBatch, num_pairs: int, global_step: int) -> TrajectoryPairBatch:
         """
@@ -102,17 +47,13 @@ class HybridSelector(Selector):
         batch_size = int(num_pairs * self.oversampling_factor)
         candidate_pairs = self.random_selector.select_pairs(train_batch, val_batch, num_pairs=batch_size, global_step=global_step)
 
-        # metrics = self.vae_trainer.train(train_batch, val_batch, global_step)
-
         # Encode trajectories with VAE and predict rewards
         with th.no_grad():
             # z_i, z_j: (batch_size, latent_dim)
             z_i, _, _ = self.vae.encode(candidate_pairs.first_obs)
             z_j, _, _ = self.vae.encode(candidate_pairs.second_obs)
-            # r_i, r_j: (batch_size, fragment_length, ensemble_size)
-            # r_i = self.reward_ensemble(candidate_pairs.first_obs, candidate_pairs.first_acts)
-            # r_j = self.reward_ensemble(candidate_pairs.second_obs, candidate_pairs.second_acts)
 
+            # r_i, r_j: (batch_size, fragment_length, ensemble_size)
             r_i, r_j, probs = self.preference_model(
                 candidate_pairs.first_obs,
                 candidate_pairs.first_acts,
@@ -159,7 +100,7 @@ class HybridSelector(Selector):
         self.writer.add_scalar("hybrid/std_q", q.std(), global_step)
 
         gamma_z = HybridSelector.gamma_median(z_i)  # after z-scoring
-        gamma_r = HybridSelector.gamma_median(r_i)  # after z-scoring returns
+        gamma_r = HybridSelector.gamma_median(r_i)  # after z-scoring
 
         self.writer.add_scalar("hybrid/gamma_z", gamma_z, global_step)
         self.writer.add_scalar("hybrid/gamma_r", gamma_r, global_step)
@@ -168,9 +109,6 @@ class HybridSelector(Selector):
         Lz = th.exp(-gamma_z * Z2)
         Lr = th.exp(-gamma_r * R2)
         K = (1.0 - self.beta) * Lz + self.beta * Lr
-
-        # L-ensemble kernel
-        # L = th.exp(-self.gamma_z * Z2 - self.gamma_r * R2)
 
         self.writer.add_scalar("hybrid/weighted_Lz_mean", (1.0 - self.beta) * Lz.mean(), global_step)
         self.writer.add_scalar("hybrid/weighted_Lr_mean", self.beta * Lr.mean(), global_step)
@@ -190,10 +128,6 @@ class HybridSelector(Selector):
         eigs_L = th.linalg.eigvalsh(L)
         self.writer.add_scalar("hybrid/top_eig_K", eigs_K[-1], global_step)
         self.writer.add_scalar("hybrid/top_eig_L", eigs_L[-1], global_step)
-
-        # 4) jitter for PSD safety
-        # diag_mean = L.diagonal().mean()
-        # L += 1e-8 * diag_mean  * th.eye(batch_size, device=L.device, dtype=L.dtype)
 
         # Greedy DPP selection
         selected = []
