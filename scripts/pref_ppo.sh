@@ -42,8 +42,8 @@ poetry run python3.10 src/active_rlhf/scripts/pref_ppo.py \
   --query-schedule="linear" \
   --total-queries=500 \
   --queries-per-session=10 \
-  --selector-type="hybrid" \
-  --sampling-strategy="uniform" \
+  --selector-type="duo" \
+  --sampling-strategy="priority" \
   --oversampling-factor=10.0 \
   --fragment-length=25 \
   --variquery-vae-latent-dim=32 \
