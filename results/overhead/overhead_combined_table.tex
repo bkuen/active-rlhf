@@ -1,0 +1,29 @@
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lllll}
+    \textbf{Method} & \textbf{Wall-clock min} & \textbf{GPU h} & \textbf{CPU h} & \textbf{Peak RAM (GB)} \\
+    
+    \emph{\underline{Walker}} & & & & \\
+    \hspace*{2mm}Random     & 33                   & 0.06         & 0.03         & 1.5                \\
+    \hspace*{2mm}VARIQuery  & 42 (+29.3\%)         & 0.15 (+144.1\%) & 0.05 (+39.1\%) & 1.9 (+27.1\%)      \\
+    \hspace*{2mm}DUO        & 33 (+1.1\%)          & 0.06 (+3.2\%) & 0.03 (+1.6\%) & 1.5 (+1.9\%)       \\
+    \hspace*{2mm}Hybrid     & 41 (+26.5\%)         & 0.15 (+157.0\%) & 0.04 (+24.5\%) & 1.8 (+16.8\%)      \\\n    
+    \emph{\underline{Halfcheetah}} & & & & \\
+    \hspace*{2mm}Random     & 31                   & 0.06         & 0.03         & 1.5                \\
+    \hspace*{2mm}VARIQuery  & 35 (+13.1\%)         & 0.08 (+31.7\%) & 0.04 (+23.3\%) & 1.9 (+26.0\%)      \\
+    \hspace*{2mm}DUO        & 31 (+1.0\%)          & 0.06 (+0.9\%) & 0.03 (+3.6\%) & 1.5 (+1.5\%)       \\
+    \hspace*{2mm}Hybrid     & 37 (+17.8\%)         & 0.11 (+83.9\%) & 0.04 (+18.4\%) & 1.8 (+17.4\%)      \\\n    
+    \emph{\underline{Ant}} & & & & \\
+    \hspace*{2mm}Random     & 39                   & 0.13         & 0.04         & 1.6                \\
+    \hspace*{2mm}VARIQuery  & 91 (+133.9\%)        & 0.56 (+340.8\%) & 0.10 (+143.9\%) & 2.1 (+27.7\%)      \\
+    \hspace*{2mm}DUO        & 42 (+9.4\%)          & 0.21 (+65.4\%) & 0.04 (+10.3\%) & 1.7 (+8.3\%)       \\
+    \hspace*{2mm}Hybrid     & 92 (+136.3\%)        & 0.45 (+254.0\%) & 0.09 (+134.0\%) & 2.0 (+23.8\%)      \\\n    
+    \emph{\underline{Hopper}} & & & & \\
+    \hspace*{2mm}Random     & 33                   & 0.06         & 0.03         & 1.5                \\
+    \hspace*{2mm}VARIQuery  & 41 (+24.9\%)         & 0.11 (+78.7\%) & 0.04 (+37.1\%) & 1.9 (+24.3\%)      \\
+    \hspace*{2mm}DUO        & 33 (-0.0\%)          & 0.06 (+1.1\%) & 0.03 (+2.5\%) & 1.5 (+1.0\%)       \\
+    \hspace*{2mm}Hybrid     & 40 (+23.4\%)         & 0.12 (+104.8\%) & 0.04 (+23.6\%) & 1.8 (+16.7\%)      \\
+  \end{tabular}
+  \caption{Computational cost summary across environments. Wall-clock time is shown in minutes. GPU h and CPU h are utilization-weighted device-hours. Peak RAM is the maximum resident set size observed. Percentage increases relative to Random baseline are shown in parentheses.}
+  \label{tab:results:performance-comparisons:computational-overhead}
+\end{table}

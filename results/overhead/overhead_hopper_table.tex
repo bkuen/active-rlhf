@@ -1,0 +1,15 @@
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lrrrr}
+    \toprule
+    \textbf{Method} & \textbf{Wall-clock (h)} & \textbf{GPU h} & \textbf{CPU h} & \textbf{Peak RAM (GB)} \\
+    \midrule
+    DUO        & 0.55 (33)       & 0.06   & 0.03   & 1.5            \\
+    Hybrid     & 0.67 (40)       & 0.12   & 0.04   & 1.8            \\
+    Random     & 0.55 (33)       & 0.06   & 0.03   & 1.5            \\
+    VARIQuery  & 0.68 (41)       & 0.11   & 0.04   & 1.9            \\
+    \bottomrule
+  \end{tabular}
+  \caption{Computational cost summary. Wall-clock time is shown in hours (minutes).}
+  \label{tab:results:overhead}
+\end{table}

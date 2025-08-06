@@ -1,0 +1,15 @@
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lrrrr}
+    \toprule
+    \textbf{Method} & \textbf{Wall-clock (h)} & \textbf{GPU h} & \textbf{CPU h} & \textbf{Peak RAM (GB)} \\
+    \midrule
+    DUO        & 0.55 (33)       & 0.06   & 0.03   & 1.5            \\
+    Hybrid     & 0.69 (41)       & 0.15   & 0.04   & 1.8            \\
+    Random     & 0.54 (33)       & 0.06   & 0.03   & 1.5            \\
+    VARIQuery  & 0.70 (42)       & 0.15   & 0.05   & 1.9            \\
+    \bottomrule
+  \end{tabular}
+  \caption{Computational cost summary. Wall-clock time is shown in hours, with minutes in parentheses. GPU h and CPU h are utilization-weighted device-hours. Peak RAM is the maximum resident set size observed.}
+  \label{tab:results:overhead}
+\end{table}

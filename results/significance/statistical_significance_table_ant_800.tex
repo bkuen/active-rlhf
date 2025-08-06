@@ -1,0 +1,28 @@
+\begin{table}[ht]
+\small
+\begin{tabularx}{\textwidth}{@{}llXrr@{}}
+\hline
+\textbf{Method A} & \textbf{Method B} & \textbf{p (Holm)} & \textbf{Effect Size} & \textbf{$\Delta$ (95\% CI)} \\
+\hline
+\multicolumn{5}{@{}l}{\textbf{AUC}} \\
+\hline
+Random & VARIQuery & $p = 1.000$ & $0.238$ (small) & $22.7$ $[-164.2, 209.5]$ \\
+Duo & Random & $p = 0.697$ & $0.492$ (small) & $79.1$ $[-236.2, 394.3]$ \\
+Duo & VARIQuery & $p = 0.504$ & $0.678$ (medium) & $101.7$ $[-192.5, 396.0]$ \\
+Duo & Hybrid & $p = 1.000$ & $0.058$ (negligible) & $13.0$ $[-425.7, 451.6]$ \\
+Hybrid & Random & $p = 0.527$ & $0.576$ (medium) & $66.1$ $[-158.9, 291.1]$ \\
+Hybrid & VARIQuery & $p = 0.527$ & $0.613$ (medium) & $88.8$ $[-194.9, 372.4]$ \\
+\hline
+\multicolumn{5}{@{}l}{\textbf{Mean Final Reward}} \\
+\hline
+Random & VARIQuery & $p = 0.551$ & $-0.348$ (small) & $-36.6$ $[-242.6, 169.4]$ \\
+Duo & Random & $p = 0.035$ & $1.433$ (large) & $288.5$ $[-106.0, 683.0]$ \\
+Duo & VARIQuery & $p = 0.049$ & $1.223$ (large) & $251.9$ $[-151.9, 655.6]$ \\
+Duo & Hybrid & $p = 0.770$ & $0.081$ (negligible) & $27.8$ $[-645.5, 701.1]$ \\
+Hybrid & Random & $p = 0.055$ & $1.114$ (large) & $260.7$ $[-198.1, 719.5]$ \\
+Hybrid & VARIQuery & $p = 0.082$ & $0.836$ (large) & $224.1$ $[-301.3, 749.4]$ \\
+\hline
+\end{tabularx}
+\caption{Statistical significance results}
+\label{tab:appendix:significance-ant}
+\end{table}
