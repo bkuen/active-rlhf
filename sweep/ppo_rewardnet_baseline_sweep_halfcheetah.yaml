@@ -1,0 +1,126 @@
+program: src/active_rlhf/scripts/pref_ppo.py
+method: bayes
+entity: bkuen-ludwig-maximilianuniversity-of-munich
+project: prefppo-baseline-tuning
+
+metric:
+  name: charts/episodic_return
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 4000
+
+parameters:
+  # — Sweep variables (PPO core) —
+  learning_rate:
+    distribution: log_uniform_values
+    min: !!float 1e-5
+    max: !!float 1e-3
+  gamma:
+    values: [0.95, 0.98, 0.99]
+  gae_lambda:
+    values: [0.8, 0.9, 0.95]
+  clip_coef:
+    values: [0.1, 0.2, 0.3]
+  ent_coef:
+    distribution: log_uniform_values
+    min: !!float 1e-4
+    max: !!float 1e-2
+  vf_coef:
+    distribution: uniform
+    min: 0.3
+    max: 0.7
+
+  # — Sweep variable (Pref‑PPO fragment length) —
+  fragment_length:
+    values: [25, 50, 75, 100]
+
+  # — Sweep variables (Reward‑net) —
+  reward_net_lr:
+    distribution: log_uniform_values
+    min: !!float 1e-5
+    max: !!float 1e-3
+  reward_net_weight_decay:
+    distribution: log_uniform_values
+    min: !!float 1e-6
+    max: !!float 1e-4
+  reward_net_dropout:
+    values: [0.0, 0.1, 0.2]
+  reward_net_hidden_dims:
+    values:
+      - "[128, 128, 128]"
+      - "[256, 256]"
+      - "[256, 256, 256]"
+  reward_net_batch_size:
+    values: [32, 64, 128]
+
+  # — Fixed arguments —
+  exp_name:
+    value: "ppo_rewardnet_baseline"
+  seed:
+    value: 42
+  torch_deterministic:
+    value: true
+  cuda:
+    value: true
+  track:
+    value: true
+  wandb_project_name:
+    value: "prefppo-baseline-tuning"
+  wandb_entity:
+    value: "bkuen-ludwig-maximilianuniversity-of-munich"
+  wandb_tags:
+    value: "sweep_baseline_random"
+  capture_video:
+    value: false
+  save_model:
+    value: true
+  upload_model:
+    value: false
+  hf_entity:
+    value: ""
+  env_id:
+    value: HalfCheetah-v5
+  total_timesteps:
+    value: 1000000
+  num_envs:
+    value: 1
+  num_steps:
+    value: 2048
+  anneal_lr:
+    value: true
+  norm_adv:
+    value: true
+  max_grad_norm:
+    value: 0.5
+  clip_vloss:
+    value: true
+  target_kl:
+    value: None
+  replay_buffer_capacity:
+    value: 1000000
+
+  selector_type:
+    value: "random"
+  query_schedule:
+    value: "linear"
+  total_queries:
+    value: 500
+  queries_per_session:
+    value: 10
+  sampling_strategy:
+    value: "uniform"
+  oversampling_factor:
+    value: 10.0
+
+  reward_net_epochs:
+    value: 5
+  reward_net_max_grad_norm:
+    value: 1.0
+  reward_net_minibatch_size:
+    value: 32
+  reward_net_ensemble_size:
+    value: 3
+  reward_net_val_split:
+    value: 0.2
