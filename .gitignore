@@ -2,7 +2,6 @@
 runs/
 runs2/
 wandb/
-benchmark/
 output/
 
 # Byte-compiled / optimized / DLL files
