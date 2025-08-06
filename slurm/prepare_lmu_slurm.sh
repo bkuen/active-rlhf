@@ -9,10 +9,5 @@ conda install conda-forge::ffmpeg
 python3.10 -m pip install --user pipx
 python3.10 -m pipx ensurepath
 python3.10 -m pipx install poetry
-
-mkdir -p ~/work/aiml
-cd ~/work/aiml
-git clone git@github.com:bkuen/active-rlhf.git
-
 cd active-rlhf
 poetry install
